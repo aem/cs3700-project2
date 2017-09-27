@@ -1,10 +1,10 @@
 #!/usr/bin/python3 -u
 
-import sys
-import socket
-import select
+from collections import defaultdict
 import json
-from typing import List
+import select
+import socket
+import sys
 
 
 def pad(name):
@@ -14,34 +14,110 @@ def pad(name):
     return '\0{}{}'.format(name, '\0' * (107 - len(name)))
 
 
-def build_socket(name: str) -> socket:
-    """
-    Build a socket connected to the given LAN
-    """
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    s.connect(pad(name))
-    return s
+def bucket(objs, key_func):
+    res = defaultdict(list)
+
+    for obj in objs:
+        key = key_func(obj)
+        res[key] += obj
+
+    return res
+
+
+def get_optimal_bpdus(bpdus, f):
+    bucketed = bucket(bpdus, f)
+    optimal = min(bucketed.keys())
+    return (optimal, bucketed[optimal])
+
+
+def message_field(d: dict, field: str):
+    return d['message'][field]
+
+
+def bpdu_root(bpdu: dict) -> int:
+    return int(message_field(bpdu, 'root'), 16)
+
+
+def bpdu_cost(bpdu: dict) -> int:
+    return message_field(bpdu, 'cost')
+
+
+def bpdu_id(bpdu: dict) -> int:
+    return int(message_field(bpdu, 'id'), 16)
+
+
+class Port(socket.socket):
+    def __init__(self, num: int, lan: str):
+        super(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+
+        self.num = num
+        self.connect(pad(lan))
+        self.active = True
 
 
 class Bridge(object):
-    def __init__(self, bridge_id: str, lans: List[str]):
+    def __init__(self, bridge_id: str, lans):
         print("Bridge " + bridge_id + " starting up\n")
         self.bridge_id = bridge_id
+        self.ports = [Port(lan) for lan in lans]
 
-        self.setup_ports(lans)
         self.update_root(bridge_id, None, 0)
 
-    def setup_ports(self, lans):
-        self.ports = [build_socket(lan) for lan in lans]
-
-    def update_root(self, root_bridge: int, root_port: int, cost):
+    def update_root(self, root_bridge: int, root_port: int, cost: int):
         self.root_bridge = root_bridge
         self.root_port = root_port
         self.cost = cost
 
-    def read_all(self):
+    def process_packets(self):
         ready, _, _ = select.select(self.ports, [], [], 0.5)
-        print(ready)
+        packets = defaultdict(list)
+
+        for port in ready:
+            packet = json.loads(port.recv(1500).decode('utf-8'))
+            packets[packet['type']] += (packet, port.num)
+
+        self.process_bpdus(packets['bpdu'])
+        self.process_data(packets['data'])
+
+    def process_bpdus(self, bpdus):
+        self.find_new_root(bpdus)
+        self.toggle_ports(bpdus)
+
+    def find_new_root(self, bpdus):
+        low_root, root_bpdus = get_optimal_bpdus(
+            bpdus, lambda x: bpdu_root(x[0]))
+
+        if low_root < self.root_bridge:
+            if len(root_bpdus) == 1:
+                new_bpdu = root_bpdus[0]
+
+                self.update_root(low_root, new_bpdu[1], bpdu_cost(new_bpdu[0]))
+            else:
+                low_cost, cost_bpdus = get_optimal_bpdus(
+                    root_bpdus, lambda x: bpdu_cost(x[0]))
+
+                if len(cost_bpdus) == 1:
+                    new_bpdu = cost_bpdus[0]
+
+                    self.update_root(low_root, new_bpdu[1], low_cost)
+                else:
+                    _, id_bpdus = get_optimal_bpdus(
+                        cost_bpdus, lambda x: bpdu_id(x[0]))
+                    new_bpdu = id_bpdus[0]
+
+                    self.update_root(low_root, new_bpdu[1], low_cost)
+
+    def toggle_ports(self, bpdus):
+        for port in self.ports:
+            port.active = self.root_port == port.num or\
+                self.cheapest_bridge(bpdus, port.num) == self.bridge_id
+
+    def cheapest_bridge(self, bpdus, port_num):
+        lan_bpdus = [bpdu[0] for bpdu in bpdus if bpdu[1] == port_num]
+
+    def process_data(self, packets):
+        # TODO forwarding
+        pass
 
     def shutdown(self):
         for port in self.ports:
@@ -52,4 +128,4 @@ if __name__ == "__main__":
     BRIDGE = Bridge(sys.argv[1], sys.argv[2:])
 
     while True:
-        BRIDGE.read_all()
+        BRIDGE.process_packets()
