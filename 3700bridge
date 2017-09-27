@@ -68,8 +68,11 @@ class Bridge(object):
         self.root_port = root_port
         self.cost = cost
 
+        print("New root: {}/{}".format(self.bridge_id, root_bridge))
+        print("Root port: {}/{}".format(self.bridge_id, self.root_port))
+
     def process_packets(self):
-        ready, _, _ = select.select(self.ports, [], [], 0.5)
+        ready, _, _ = select.select(self.ports, [], [], 0.2)
         packets = defaultdict(list)
 
         for port in ready:
@@ -78,6 +81,11 @@ class Bridge(object):
 
         self.process_bpdus(packets['bpdu'])
         self.process_data(packets['data'])
+
+        ready, _, _ = select.select([], self.ports, [], 0.2)
+
+        for port in ready:
+            port.send(self.new_bpdu_msg().encode("utf-8"))
 
     def process_bpdus(self, bpdus):
         self.find_new_root(bpdus)
@@ -112,12 +120,36 @@ class Bridge(object):
             port.active = self.root_port == port.num or\
                 self.cheapest_bridge(bpdus, port.num) == self.bridge_id
 
+            if not port.active:
+                print('Disabled port: {}/{}'.format(self.bridge_id, port.num))
+
     def cheapest_bridge(self, bpdus, port_num):
         lan_bpdus = [bpdu[0] for bpdu in bpdus if bpdu[1] == port_num]
+        low_cost, cost_bpdus = get_optimal_bpdus(lan_bpdus, lambda x: bpdu_cost(x))
+        cheapest_bridges = [bpdu_id(bpdu) for bpdu in cost_bpdus]
+
+        if low_cost == self.cost:
+            cheapest_bridges.append(self.bridge_id)
+
+        return min(cheapest_bridges)
 
     def process_data(self, packets):
         # TODO forwarding
         pass
+
+    def new_bpdu_msg(self):
+        packet = {
+            'source': self.bridge_id,
+            'dest': 'ffff',
+            'type': 'bpdu',
+            'message': {
+                'id': self.bridge_id,
+                'root': self.root_bridge,
+                'cost': self.cost
+            }
+        }
+
+        return json.dumps(packet)
 
     def shutdown(self):
         for port in self.ports:
