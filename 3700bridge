@@ -4,49 +4,52 @@ import sys
 import socket
 import select
 import json
+from typing import List
 
-# pads the name with null bytes at the end
+
 def pad(name):
-    result = '\0' + name
-    while len(result) < 108:
-        result += '\0'
-    return result
+    """
+    Pads the name with null bytes
+    """
+    return '\0{}{}'.format(name, '\0' * (107 - len(name)))
+
+
+def build_socket(name: str) -> socket:
+    """
+    Build a socket connected to the given LAN
+    """
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    s.connect(pad(name))
+    return s
+
+
+class Bridge(object):
+    def __init__(self, bridge_id: str, lans: List[str]):
+        print("Bridge " + bridge_id + " starting up\n")
+        self.bridge_id = bridge_id
+
+        self.setup_ports(lans)
+        self.update_root(bridge_id, None, 0)
+
+    def setup_ports(self, lans):
+        self.ports = [build_socket(lan) for lan in lans]
+
+    def update_root(self, root_bridge: int, root_port: int, cost):
+        self.root_bridge = root_bridge
+        self.root_port = root_port
+        self.cost = cost
+
+    def read_all(self):
+        ready, _, _ = select.select(self.ports, [], [], 0.5)
+        print(ready)
+
+    def shutdown(self):
+        for port in self.ports:
+            port.close()
 
 
 if __name__ == "__main__":
-    id = sys.argv[1]
-    LAN = sys.argv[2:]
-    sockets = []
+    BRIDGE = Bridge(sys.argv[1], sys.argv[2:])
 
-    # creates sockets and connects to them
-    for x in range(len(LAN)):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        s.connect(pad(LAN[x]))
-        sockets.append(s)
-
-    print "Bridge " + id + " starting up\n"
-
-    # Main loop
     while True:
-        # Calls select with all the sockets
-        ready, ignore, ignore2 = select.select(sockets, [], [], 0.5)
-
-        # Reads from each fo the ready sockets
-        data = [(x, json.data(x.recv(1500))) for x in ready]
-        process_bpdu_packet([el for el in data if el[1]['type'] == 'bpdu'])
-        process_data_packet([el for el in data if el[1]['type'] == 'data'])
-
-def process_bpdu_packet(data):
-    # 1. filter by root
-    #   1a. if len == 1, root = res[0]
-    #   1b. else select all packets with lowest root
-    # 2. sort packets by hops to root
-    #   2a. if len == 1, root = res[0]
-    # 3. else filter by lowest number of hops
-    #   3a. if len(res) == 1, root = res[0]
-    # 4. sort ascending res by bridge id
-    #   4a. root = res[0]
-    # 5. if ()
-
-def process_data_packet():
-    return True
+        BRIDGE.read_all()
