@@ -3,6 +3,7 @@
 import sys
 import socket
 import select
+import json
 
 # pads the name with null bytes at the end
 def pad(name):
@@ -27,10 +28,25 @@ if __name__ == "__main__":
 
     # Main loop
     while True:
-        # Calls select with all the sockets; change the timeout value (1)
-        ready, ignore, ignore2 = select.select(sockets, [], [], 1)
+        # Calls select with all the sockets
+        ready, ignore, ignore2 = select.select(sockets, [], [], 0.5)
 
         # Reads from each fo the ready sockets
-        for x in ready:
-            data = x.recv(1500)
-            print(data)
+        data = [(x, json.data(x.recv(1500))) for x in ready]
+        process_bpdu_packet([el for el in data if el[1]['type'] == 'bpdu'])
+        process_data_packet([el for el in data if el[1]['type'] == 'data'])
+
+def process_bpdu_packet(data):
+    # 1. filter by root
+    #   1a. if len == 1, root = res[0]
+    #   1b. else select all packets with lowest root
+    # 2. sort packets by hops to root
+    #   2a. if len == 1, root = res[0]
+    # 3. else filter by lowest number of hops
+    #   3a. if len(res) == 1, root = res[0]
+    # 4. sort ascending res by bridge id
+    #   4a. root = res[0]
+    # 5. if ()
+
+def process_data_packet():
+    return True
