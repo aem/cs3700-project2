@@ -77,7 +77,7 @@ class Bridge(object):
 
     def update_root(self, root_bridge: str, root_port: int, root_cost: int):
         self.root_bridge = root_bridge
-        self.reset_routing_table
+        self.reset_routing_table()
         print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
 
         self.update_root_port(root_port, root_cost)
