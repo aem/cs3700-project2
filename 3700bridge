@@ -18,7 +18,7 @@ class PacketType(Enum):
 
 
 class Packet(object):
-    def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
+    def __init__(self, source: int, port: int, dest: int, p_type: PacketType, message: dict):
         self.source = source
         self.port = port
         self.dest = dest
@@ -84,23 +84,33 @@ class Bridge(object):
 
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
-        self.update_root(self.bridge_id, None, 0)
-        self.routing_table = dict()
+
+        self.root_bridge = bridge_id
+        self.root_port = None
+        self.root_cost = 0
+        self.next_bridge = None
+
+        self.reset_routing_table()
 
     def reset_routing_table(self):
         self.routing_table = dict()
 
-    def update_root(self, root_bridge: str, root_port: int, root_cost: int):
-        self.root_bridge = root_bridge
-        self.reset_routing_table()
-        print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
+    def update_root(self, root_bridge: int, root_port: int, root_cost: int, next_bridge: int):
+        if root_bridge != self.root_bridge:
+            self.root_bridge = root_bridge
+            print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
 
-        self.update_root_port(root_port, root_cost)
+        if root_port != self.root_port:
+            self.update_root_port(root_port)
 
-    def update_root_port(self, root_port: int, root_cost: int):
-        self.root_port = root_port
         self.root_cost = root_cost
+        self.next_bridge = next_bridge
+
+    def update_root_port(self, root_port: int):
+        self.root_port = root_port
         print('Root port: {}/{}'.format(serialize_address(self.bridge_id), root_port))
+
+        self.reset_routing_table()
 
     def run(self):
         last_cycle = datetime.utcnow()
@@ -116,9 +126,13 @@ class Bridge(object):
 
             self.update_routing_table_ttls()
             self.process_bpdus(bpdus)
-            for packet in data:
-                self.process_data_packet(packet)
+            self.process_data(data)
+
             self.send_bpdus()
+
+    def process_data(self, data_packets):
+        for packet in data_packets:
+            self.process_data_packet(packet)
 
     def process_data_packet(self, packet):
         print('Received message {}, on port {} from {} to {}').format(
@@ -161,11 +175,28 @@ class Bridge(object):
         if not bpdus:
             return
 
-        low_bpdu = bpdus[0]
-        for bpdu in bpdus[1:]:
+        low_bpdu = self.make_root_bpdu()
+        for bpdu in bpdus:
             if bpdu_less_than(bpdu, low_bpdu):
                 low_bpdu = bpdu
-        # TODO
+
+        new_root = deserialize_address(low_bpdu.message['root'])
+        new_port = deserialize_address(low_bpdu.port)
+        new_cost = low_bpdu.message['cost'] + 1
+        new_next = deserialize_address(low_bpdu.message['id'])
+
+        self.update_root(new_root, new_port, new_cost, new_next)
+
+    def make_root_bpdu(self):
+        return Packet(self.bridge_id,
+                      self.root_port,
+                      deserialize_address('ffff'),
+                      PacketType.BPDU,
+                      {
+                          'id': serialize_address(self.next_bridge),
+                          'root': serialize_address(self.root_bridge),
+                          'cost': self.root_cost - 1
+                      })
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
@@ -227,5 +258,6 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
     msg1 = bpdu1.message
     msg2 = bpdu2.message
 
-    # TODO
-    return (msg1['root'])
+    return (deserialize_address(msg1['root']) < deserialize_address(msg2['root']) or
+            msg1['cost'] < msg2['cost'] or
+            deserialize_address(msg1['id']) < deserialize_address(msg2['id']))
