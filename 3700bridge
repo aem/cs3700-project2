@@ -89,22 +89,34 @@ class Bridge(object):
         self.root_port = None
         self.root_cost = 0
         self.next_bridge = None
+        self.root_bpdu = Packet.bpdu(self.bridge_id, self.bridge_id, 0)
 
         self.reset_routing_table()
 
     def reset_routing_table(self):
         self.routing_table = dict()
 
-    def update_root(self, root_bridge: int, root_port: int, root_cost: int, next_bridge: int):
-        if root_bridge != self.root_bridge:
-            self.root_bridge = root_bridge
-            print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
+    def update_root(self, low_bpdu: Packet):
+        changed = False
 
-        if root_port != self.root_port:
-            self.update_root_port(root_port)
+        new_root = deserialize_address(low_bpdu.message['root'])
+        new_port = deserialize_address(low_bpdu.port)
+        new_cost = low_bpdu.message['cost'] + 1
+        new_next = deserialize_address(low_bpdu.message['id'])
 
-        self.root_cost = root_cost
-        self.next_bridge = next_bridge
+        if self.root_bridge != new_root:
+            self.root_bridge = new_root
+            changed = True
+            print('New root: {}/{}'.format(serialize_address(self.bridge_id), new_root))
+
+        if self.root_port != new_port:
+            self.update_root_port(new_port)
+            changed = True
+
+        if changed:
+            self.root_cost = new_cost
+            self.next_bridge = new_next
+            self.root_bpdu = low_bpdu
 
     def update_root_port(self, root_port: int):
         self.root_port = root_port
@@ -158,45 +170,29 @@ class Bridge(object):
         else:
             self.broadcast_packet(packet)
 
-    def forward_packet(self, packet, port):
+    def forward_packet(self, packet: Packet, port: Port):
         print('Forwarding message {} to port {}').format(packet.id(), port.num)
         port.send_packet(packet)
 
-    def broadcast_packet(self, packet):
+    def broadcast_packet(self, packet: Packet):
         print('Broadcasting message {} to all ports').format(packet.id())
         for port in self.ports:
             if port.is_open:
                 port.send_packet(packet)
 
-    def drop_packet(self, packet):
+    def drop_packet(self, packet: Packet):
         print('Not forwarding packet {}').format(packet.id())
 
     def process_bpdus(self, bpdus):
         if not bpdus:
             return
 
-        low_bpdu = self.make_root_bpdu()
+        low_bpdu = self.root_bpdu
         for bpdu in bpdus:
             if bpdu_less_than(bpdu, low_bpdu):
                 low_bpdu = bpdu
 
-        new_root = deserialize_address(low_bpdu.message['root'])
-        new_port = deserialize_address(low_bpdu.port)
-        new_cost = low_bpdu.message['cost'] + 1
-        new_next = deserialize_address(low_bpdu.message['id'])
-
-        self.update_root(new_root, new_port, new_cost, new_next)
-
-    def make_root_bpdu(self):
-        return Packet(self.bridge_id,
-                      self.root_port,
-                      deserialize_address('ffff'),
-                      PacketType.BPDU,
-                      {
-                          'id': serialize_address(self.next_bridge),
-                          'root': serialize_address(self.root_bridge),
-                          'cost': self.root_cost - 1
-                      })
+        self.update_root(low_bpdu)
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
@@ -209,7 +205,7 @@ class Bridge(object):
                 self.bridge_id, self.root_bridge, self.root_cost))
 
 
-def pad(name):
+def pad(name: str) -> str:
     """
     Pads the name with null bytes
     """
