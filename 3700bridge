@@ -14,9 +14,16 @@ class PacketType(Enum):
     BPDU = 1
     DATA = 2
 
+class Packet(object):
+    def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
+        self.source = source
+        self.port = port
+        self.dest = dest
+        self.type = p_type
+        self.message = message
 
-Packet = namedtuple('Packet', ['source', 'port', 'dest', 'type', 'message'])
-# A Packet is a Packet(String, Int, String, PacketType, Dict)
+    def id(self):
+        return self.message['id']
 
 
 class Port(socket):
@@ -50,6 +57,12 @@ class Port(socket):
         self.sendall(packet_str.encode('utf-8'))
 
 
+class RoutingEntry(object):
+    def init(self, port_id: int):
+        self.port_id = port_id
+        self.ttl = 5
+
+
 class Bridge(object):
     def __init__(self, bridge_id: str, lans):
         print('Bridge {} starting up'.format(bridge_id))
@@ -57,9 +70,14 @@ class Bridge(object):
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
         self.update_root(self.bridge_id, None, 0)
+        self.routing_table = dict()
+
+    def reset_routing_table(self):
+        self.routing_table = dict()
 
     def update_root(self, root_bridge: str, root_port: int, root_cost: int):
         self.root_bridge = root_bridge
+        self.reset_routing_table()
         print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
 
         self.update_root_port(root_port, root_cost)
@@ -72,11 +90,42 @@ class Bridge(object):
     def run(self):
         while True:
             packets = self.read_packets()
-
             bpdus = filter_bpdus(packets)
             data = filter_data(packets)
 
             self.process_bpdus(bpdus)
+
+    def process_data_packet(self, packet):
+        print('Received message {}, on port {} from {} to {}').format(packet.id(), packet.port, packet.source, packet.dest)
+        self.update_routing_table(packet)
+        self.process_packet(packet)
+
+    def update_routing_table(self, packet):
+        self.routing_table[packet.source] = RoutingEntry(packet.port)
+
+    def process_packet(self, packet):
+        if self.routing_table.get(packet.dest):
+            port = self.ports.get(self.routing_table[packet.dest].port)
+            if port and port.is_open:
+                self.forward_packet(packet)
+            else:
+                self.drop_packet(packet)
+        else:
+            self.broadcast_packet(packet)
+
+    def forward_packet(self, packet):
+        print('Forwarding message {} to port {}').format(packet.id(), packet.port)
+        port = self.ports[packet.port]
+        port.send_packet(packet)
+
+    def broadcast_packet(self, packet):
+        print('Broadcasting message {} to all ports').format(packet.id())
+        for port in self.ports:
+            if port.is_open:
+                port.send_packet(packet)
+
+    def drop_packet(self, packet):
+        print('Not forwarding packet {}').format(packet.id())
 
     def process_bpdus(self, bpdus):
         if not bpdus:
@@ -86,7 +135,6 @@ class Bridge(object):
         for bpdu in bpdus[1:]:
             if bpdu_less_than(bpdu, low_bpdu):
                 low_bpdu = bpdu
-
         # TODO
 
     def read_packets(self):
