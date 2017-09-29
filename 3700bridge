@@ -107,15 +107,14 @@ class Bridge(object):
         if self.routing_table.get(packet.dest):
             port = self.ports.get(self.routing_table[packet.dest].port)
             if port and port.is_open:
-                self.forward_packet(packet)
+                self.forward_packet(packet, port)
             else:
                 self.drop_packet(packet)
         else:
             self.broadcast_packet(packet)
 
-    def forward_packet(self, packet):
-        print('Forwarding message {} to port {}').format(packet.id(), packet.port)
-        port = self.ports[packet.port]
+    def forward_packet(self, packet, port):
+        print('Forwarding message {} to port {}').format(packet.id(), port.num)
         port.send_packet(packet)
 
     def broadcast_packet(self, packet):
