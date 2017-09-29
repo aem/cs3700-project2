@@ -49,12 +49,14 @@ class Bridge(object):
         self.root_cost = root_cost
         print('Root port: {}/{}'.format(serialize_address(self.bridge_id), root_port))
 
+    def run(self):
+        while True:
+            packets = self.read_packets()
+
+
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
         return [port.recv_packet() for port in ready_ports]
-
-    def run(self):
-        pass
 
 
 def pad(name):
