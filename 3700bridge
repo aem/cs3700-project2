@@ -10,6 +10,10 @@ SELECT_TIMEOUT = 0.1
 MAX_PACKET_SIZE = 1500
 
 
+class PacketType(Enum):
+    BPDU = 1
+    DATA = 2
+
 class Packet(object):
     def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
         self.source = source
@@ -20,11 +24,6 @@ class Packet(object):
 
     def id(self):
         return self.message['id']
-
-
-class PacketType(Enum):
-    BPDU = 1
-    DATA = 2
 
 
 class Port(socket):
