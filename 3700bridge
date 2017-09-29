@@ -1,11 +1,10 @@
 #!/usr/bin/python3 -u
 
-from collections import namedtuple
-from enum import Enum
-from json import loads, dumps
-from select import select
-from socket import socket, AF_UNIX, SOCK_SEQPACKET
 from datetime import datetime
+from enum import Enum
+from json import dumps, loads
+from select import select
+from socket import AF_UNIX, SOCK_SEQPACKET, socket
 from time import sleep
 
 SELECT_TIMEOUT = 0.1
@@ -16,6 +15,7 @@ MIN_THREAD_SLEEP = 0.5
 class PacketType(Enum):
     BPDU = 1
     DATA = 2
+
 
 class Packet(object):
     def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
@@ -29,8 +29,16 @@ class Packet(object):
         return self.message['id']
 
     @staticmethod
-    def bpdu(source: str, root: int, cost: int):
-        return Packet(source, -1, 'ffff', PacketType.BPDU, {'id': '1234', 'root': serialize_address(root), 'cost': cost})
+    def bpdu(source: int, root: int, cost: int):
+        return Packet(source,
+                      -1,
+                      deserialize_address('ffff'),
+                      PacketType.BPDU,
+                      {
+                          'id': '1234',
+                          'root': serialize_address(root),
+                          'cost': cost
+                      })
 
 
 class Port(socket):
@@ -65,7 +73,7 @@ class Port(socket):
 
 
 class RoutingEntry(object):
-    def init(self, port_id: int):
+    def __init__(self, port_id: int):
         self.port_id = port_id
         self.created_at = datetime.utcnow()
 
@@ -113,7 +121,8 @@ class Bridge(object):
             self.send_bpdus()
 
     def process_data_packet(self, packet):
-        print('Received message {}, on port {} from {} to {}').format(packet.id(), packet.port, packet.source, packet.dest)
+        print('Received message {}, on port {} from {} to {}').format(
+            packet.id(), packet.port, packet.source, packet.dest)
         self.update_routing_table(packet)
         self.process_packet(packet)
 
@@ -163,9 +172,10 @@ class Bridge(object):
         return [port.recv_packet() for port in ready_ports]
 
     def send_bpdus(self):
-        _, ready_ports, _, _ = select([], self.ports, [], SELECT_TIMEOUT)
+        _, ready_ports, _ = select([], self.ports, [], SELECT_TIMEOUT)
         for port in ready_ports:
-            port.send_packet(Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost))
+            port.send_packet(Packet.bpdu(
+                self.bridge_id, self.root_bridge, self.root_cost))
 
 
 def pad(name):
