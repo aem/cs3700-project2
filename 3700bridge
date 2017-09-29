@@ -56,8 +56,6 @@ class Port(socket):
         packet_str = dumps(packet_dict)
         self.sendall(packet_str.encode('utf-8'))
 
-    def send_packet(self, packet):
-        pass
 
 class RoutingEntry(object):
     def init(self, port_id: int):
