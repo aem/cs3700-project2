@@ -5,6 +5,7 @@ from enum import Enum
 from json import dumps, loads
 from select import select
 from socket import AF_UNIX, SOCK_SEQPACKET, socket
+from sys import argv
 from time import sleep, time
 
 # The length of time to wait for ports to be ready to read/write, in seconds
@@ -325,3 +326,7 @@ def bucket_by_port(bpdus):
         res[bpdu.port].append(bpdu)
 
     return res
+
+if __name__ == '__main__':
+    BRIDGE = Bridge(argv[1], argv[2:])
+    BRIDGE.run()
