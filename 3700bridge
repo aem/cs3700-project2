@@ -5,6 +5,7 @@ from enum import Enum
 from json import loads, dumps
 from select import select
 from socket import socket, AF_UNIX, SOCK_SEQPACKET
+from datetime import datetime
 
 SELECT_TIMEOUT = 0.1
 MAX_PACKET_SIZE = 1500
@@ -60,7 +61,7 @@ class Port(socket):
 class RoutingEntry(object):
     def init(self, port_id: int):
         self.port_id = port_id
-        self.ttl = 5
+        self.created_at = datetime.utcnow()
 
 
 class Bridge(object):
@@ -93,7 +94,10 @@ class Bridge(object):
             bpdus = filter_bpdus(packets)
             data = filter_data(packets)
 
+            self.update_routing_table_ttls()
             self.process_bpdus(bpdus)
+            for packet in data:
+                self.process_data_packet(packet)
 
     def process_data_packet(self, packet):
         print('Received message {}, on port {} from {} to {}').format(packet.id(), packet.port, packet.source, packet.dest)
@@ -102,6 +106,11 @@ class Bridge(object):
 
     def update_routing_table(self, packet):
         self.routing_table[packet.source] = RoutingEntry(packet.port)
+
+    def update_routing_table_ttls(self):
+        for bridge, entry in self.routing_table:
+            if (datetime.utcnow() - entry.created_at).total_seconds() > 5:
+                self.routing_table.pop(bridge, False)
 
     def process_packet(self, packet):
         if self.routing_table.get(packet.dest):
