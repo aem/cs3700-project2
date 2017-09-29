@@ -1,12 +1,18 @@
 #!/usr/bin/python3 -u
 
 from collections import namedtuple
+from enum import Enum, auto
 from json import loads
 from select import select
 from socket import socket, AF_UNIX, SOCK_SEQPACKET
 
 SELECT_TIMEOUT = 0.1
 MAX_PACKET_SIZE = 1500
+
+
+class PacketType(Enum):
+    BPDU = auto()
+    DATA = auto()
 
 
 Packet = namedtuple('Packet', ['source', 'port', 'dest', 'type', 'message'])
@@ -26,8 +32,10 @@ class Port(socket):
         msg = self.recv(MAX_PACKET_SIZE)
         msg_dict = loads(msg.decode('utf-8'))
 
+        packet_type = PacketType.BPDU if msg_dict['type'] == 'BPDU' else PacketType.DATA
+
         return Packet(msg_dict['source'], self.num, msg_dict['dest'],
-                      msg_dict['type'], msg_dict['message'])
+                      packet_type, msg_dict['message'])
 
 
 class Bridge(object):
@@ -52,7 +60,6 @@ class Bridge(object):
     def run(self):
         while True:
             packets = self.read_packets()
-
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
