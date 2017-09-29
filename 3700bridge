@@ -6,9 +6,11 @@ from json import loads, dumps
 from select import select
 from socket import socket, AF_UNIX, SOCK_SEQPACKET
 from datetime import datetime
+from time import sleep
 
 SELECT_TIMEOUT = 0.1
 MAX_PACKET_SIZE = 1500
+MIN_THREAD_SLEEP = 0.5
 
 
 class PacketType(Enum):
@@ -25,6 +27,10 @@ class Packet(object):
 
     def id(self):
         return self.message['id']
+
+    @staticmethod
+    def bpdu(source: str, root: int, cost: int):
+        return Packet(source, -1, 'ffff', PacketType.BPDU, {'id': '1234', 'root': serialize_address(root), 'cost': cost})
 
 
 class Port(socket):
@@ -89,7 +95,13 @@ class Bridge(object):
         print('Root port: {}/{}'.format(serialize_address(self.bridge_id), root_port))
 
     def run(self):
+        last_cycle = datetime.utcnow()
         while True:
+            since_last_run = (datetime.utcnow() - last_cycle).total_seconds()
+            if (since_last_run < MIN_THREAD_SLEEP):
+                sleep(MIN_THREAD_SLEEP - since_last_run)
+            last_cycle = datetime.utcnow()
+
             packets = self.read_packets()
             bpdus = filter_bpdus(packets)
             data = filter_data(packets)
@@ -98,6 +110,7 @@ class Bridge(object):
             self.process_bpdus(bpdus)
             for packet in data:
                 self.process_data_packet(packet)
+            self.send_bpdus()
 
     def process_data_packet(self, packet):
         print('Received message {}, on port {} from {} to {}').format(packet.id(), packet.port, packet.source, packet.dest)
@@ -148,6 +161,11 @@ class Bridge(object):
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
         return [port.recv_packet() for port in ready_ports]
+
+    def send_bpdus(self):
+        _, ready_ports, _, _ = select([], self.ports, [], SELECT_TIMEOUT)
+        for port in ready_ports:
+            port.send_packet(Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost))
 
 
 def pad(name):
