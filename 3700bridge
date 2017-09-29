@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -u
 
 from collections import namedtuple
-from enum import Enum, auto
+from enum import Enum
 from json import loads
 from select import select
 from socket import socket, AF_UNIX, SOCK_SEQPACKET
@@ -11,8 +11,8 @@ MAX_PACKET_SIZE = 1500
 
 
 class PacketType(Enum):
-    BPDU = auto()
-    DATA = auto()
+    BPDU = 1
+    DATA = 2
 
 
 Packet = namedtuple('Packet', ['source', 'port', 'dest', 'type', 'message'])
