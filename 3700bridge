@@ -61,6 +61,14 @@ class Bridge(object):
         while True:
             packets = self.read_packets()
 
+            bpdus = filter_bpdus(packets)
+            data = filter_data(packets)
+
+            self.process_bpdus(bpdus)
+
+    def process_bpdus(self, bpdus):
+        pass
+
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
         return [port.recv_packet() for port in ready_ports]
@@ -85,3 +93,24 @@ def serialize_address(addr: int) -> str:
     Serialize the decimal address into a hex string
     """
     return hex(addr)[2:]
+
+
+def filter_bpdus(packets):
+    """
+    Get all the BPDUs
+    """
+    return filter_packets_by_type(packets, PacketType.BPDU)
+
+
+def filter_data(packets):
+    """
+    Get all the data packets
+    """
+    return filter_packets_by_type(packets, PacketType.DATA)
+
+
+def filter_packets_by_type(packets, packet_type: PacketType):
+    """
+    Get all the packets of the given type
+    """
+    return [packet for packet in packets if packet.type is packet_type]
