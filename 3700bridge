@@ -101,7 +101,7 @@ class Bridge(object):
         self.process_packet(packet)
 
     def update_routing_table(self, packet):
-        self.routing_table[packet.source] = RoutingEntry(port=packet.port)
+        self.routing_table[packet.source] = RoutingEntry(packet.port)
 
     def process_packet(self, packet):
         if self.routing_table.get(packet.dest):
