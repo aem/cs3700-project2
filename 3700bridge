@@ -2,7 +2,7 @@
 
 from collections import namedtuple
 from enum import Enum
-from json import loads
+from json import loads, dumps
 from select import select
 from socket import socket, AF_UNIX, SOCK_SEQPACKET
 
@@ -16,6 +16,7 @@ class PacketType(Enum):
 
 
 Packet = namedtuple('Packet', ['source', 'port', 'dest', 'type', 'message'])
+# A Packet is a Packet(String, Int, String, PacketType, Dict)
 
 
 class Port(socket):
@@ -32,10 +33,21 @@ class Port(socket):
         msg = self.recv(MAX_PACKET_SIZE)
         msg_dict = loads(msg.decode('utf-8'))
 
-        packet_type = PacketType.BPDU if msg_dict['type'] == 'BPDU' else PacketType.DATA
+        packet_type = PacketType[msg_dict['type'].upper()]
 
         return Packet(msg_dict['source'], self.num, msg_dict['dest'],
                       packet_type, msg_dict['message'])
+
+    def send_packet(self, packet: Packet):
+        packet_dict = {
+            'source': packet.source,
+            'dest': packet.dest,
+            'type': packet.type.name.lower(),
+            'message': packet.message
+        }
+
+        packet_str = dumps(packet_dict)
+        self.sendall(packet_str.encode('utf-8'))
 
 
 class Bridge(object):
@@ -67,7 +79,15 @@ class Bridge(object):
             self.process_bpdus(bpdus)
 
     def process_bpdus(self, bpdus):
-        pass
+        if not bpdus:
+            return
+
+        low_bpdu = bpdus[0]
+        for bpdu in bpdus[1:]:
+            if bpdu_less_than(bpdu, low_bpdu):
+                low_bpdu = bpdu
+
+        # TODO
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
@@ -114,3 +134,14 @@ def filter_packets_by_type(packets, packet_type: PacketType):
     Get all the packets of the given type
     """
     return [packet for packet in packets if packet.type is packet_type]
+
+
+def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
+    """
+    Is bpdu1 less than bpdu2?
+    """
+    msg1 = bpdu1.message
+    msg2 = bpdu2.message
+
+    # TODO
+    return (msg1['root'])
