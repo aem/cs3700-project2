@@ -97,6 +97,7 @@ class Bridge(object):
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
+        self.seen_packets = []
         self.root_bridge = -1
         self.root_port = -1
         self.root_cost = -1
@@ -145,10 +146,14 @@ class Bridge(object):
         self.reset_routing_table()
 
     def run(self):
+        cycle_start = 0
         while True:
-            cycle_start = time()
 
-            self.send_bpdus()
+            cycle_length = time() - cycle_start
+            if cycle_length > MIN_THREAD_SLEEP:
+                self.send_bpdus()
+                cycle_start = time()
+                
             packets = self.read_packets()
 
             if packets:
@@ -159,10 +164,6 @@ class Bridge(object):
                 self.process_bpdus(bpdus)
                 self.process_data(data)
 
-            cycle_length = time() - cycle_start
-            if cycle_length < MIN_THREAD_SLEEP:
-                wait_secs = MIN_THREAD_SLEEP - cycle_length
-                sleep(wait_secs)
             print([port.is_open for port in self.ports])
 
     def process_data(self, data_packets):
@@ -184,8 +185,13 @@ class Bridge(object):
                 self.routing_table.pop(bridge, False)
 
     def process_packet(self, packet):
+        if packet.pid() in self.seen_packets:
+            self.drop_packet(packet)
+            return
+
+        self.seen_packets.append(packet.pid())
         if self.routing_table.get(packet.dest):
-            port = self.ports.get(self.routing_table[packet.dest].port)
+            port = self.ports[self.routing_table[packet.dest].port_id]
             if port and port.is_open:
                 self.forward_packet(packet, port)
             else:
@@ -214,7 +220,8 @@ class Bridge(object):
         low_bpdu = lowest_bpdu(bpdus[:].append(self.root_bpdu))
         self.update_root(low_bpdu)
 
-        self.open_all_ports()
+        should_flush_table = False
+        # self.open_all_ports()
 
         own_bpdus = [bpdu for bpdu in bpdus if bpdu.source == self.bridge_id]
         if own_bpdus:
@@ -224,6 +231,7 @@ class Bridge(object):
                 for port in [packet.port for packet in lan_bpdus if packet.port != open_port]:
                     print("Closing port {}".format(port))
                     self.close_port(port)
+                    should_flush_table = True
 
         bpdus_by_port = bucket_by_port(bpdus)
         
@@ -237,6 +245,9 @@ class Bridge(object):
 
             if low_port_bpdu and low_port_bpdu.source != self.bridge_id:
                 self.close_port(port)
+                should_flush_table = True
+        if should_flush_table:
+            self.reset_routing_table()
 
     def open_all_ports(self):
         for port in self.ports:
@@ -244,7 +255,6 @@ class Bridge(object):
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
-        # return [packet for port in ready_ports for packet in port.recv_all_packets()]
         return [port.recv_packet() for port in ready_ports]
 
     def send_bpdus(self):
@@ -256,7 +266,6 @@ class Bridge(object):
 
     def close_port(self, port):
         self.ports[port].is_open = False
-        self.reset_routing_table()
 
 def pad(name: str) -> str:
     """
