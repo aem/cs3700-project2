@@ -97,13 +97,13 @@ class Bridge(object):
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
-        self.root_bridge = self.bridge_id
-        self.root_port = None
-        self.root_cost = 0
-        self.next_bridge = None
-        self.root_bpdu = self.make_bpdu()
+        self.root_bridge = -1
+        self.root_port = -1
+        self.root_cost = -1
+        self.next_bridge = -1
 
-        self.reset_routing_table()
+        bpdu = Packet.bpdu(self.bridge_id, self.bridge_id, 0)
+        self.update_root(bpdu)
 
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
@@ -118,7 +118,7 @@ class Bridge(object):
         changed = False
 
         new_root = deserialize_address(low_bpdu.message['root'])
-        new_port = deserialize_address(low_bpdu.port)
+        new_port = low_bpdu.port
         new_cost = low_bpdu.message['cost'] + 1
         new_next = deserialize_address(low_bpdu.message['id'])
 
