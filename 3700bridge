@@ -101,6 +101,7 @@ class Bridge(object):
         self.root_port = -1
         self.root_cost = -1
         self.next_bridge = -1
+        self.reset_routing_table()
 
         bpdu = Packet.bpdu(self.bridge_id, self.bridge_id, 0)
         self.reset_routing_table()
