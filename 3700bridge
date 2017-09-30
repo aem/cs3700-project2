@@ -59,17 +59,6 @@ class Port(socket):
 
         self.connect(pad(lan))
 
-    def recv_all_packets(self):
-        packets = []
-
-        for _ in range(MAX_PACKETS_RECV):
-            packet = self.recv_packet()
-
-            if not packet:
-                return packets
-
-            packets.append(packet)
-
     def recv_packet(self) -> Packet:
         msg = self.recv(MAX_PACKET_SIZE)
 
@@ -123,6 +112,9 @@ class Bridge(object):
         self.routing_table = dict()
 
     def update_root(self, low_bpdu: Packet) -> bool:
+        if not low_bpdu:
+            return False
+
         changed = False
 
         new_root = deserialize_address(low_bpdu.message['root'])
@@ -151,30 +143,32 @@ class Bridge(object):
         self.reset_routing_table()
 
     def run(self):
-        cycle_start = time()
         while True:
-            packets = self.read_packets()
-            bpdus = filter_bpdus(packets)
-            data = filter_data(packets)
+            cycle_start = time()
 
-            self.update_routing_table_ttls()
-            self.process_bpdus(bpdus)
-            self.process_data(data)
-            self.send_bpdus()
+            packets = self.read_packets()
+
+            if packets:
+                bpdus = filter_bpdus(packets)
+                data = filter_data(packets)
+
+                self.update_routing_table_ttls()
+                self.process_bpdus(bpdus)
+                self.process_data(data)
+                self.send_bpdus()
 
             cycle_length = time() - cycle_start
             if cycle_length < MIN_THREAD_SLEEP:
-                sleep(MIN_THREAD_SLEEP - cycle_length)
-
-            cycle_start = time()
+                wait_secs = MIN_THREAD_SLEEP - cycle_length
+                sleep(wait_secs)
 
     def process_data(self, data_packets):
         for packet in data_packets:
             self.process_data_packet(packet)
 
     def process_data_packet(self, packet):
-        print('Received message {}, on port {} from {} to {}').format(
-            packet.pid(), packet.port, packet.source, packet.dest)
+        print('Received message {}, on port {} from {} to {}'.format(
+            packet.pid(), packet.port, packet.source, packet.dest))
         self.update_routing_table(packet)
         self.process_packet(packet)
 
@@ -197,18 +191,18 @@ class Bridge(object):
             self.broadcast_packet(packet)
 
     def forward_packet(self, packet: Packet, port: Port):
-        print('Forwarding message {} to port {}').format(
-            packet.pid(), port.num)
+        print('Forwarding message {} to port {}'.format(
+            packet.pid(), port.num))
         port.send_packet(packet)
 
     def broadcast_packet(self, packet: Packet):
-        print('Broadcasting message {} to all ports').format(packet.pid())
+        print('Broadcasting message {} to all ports'.format(packet.pid()))
         for port in self.ports:
             if port.is_open:
                 port.send_packet(packet)
 
     def drop_packet(self, packet: Packet):
-        print('Not forwarding packet {}').format(packet.pid())
+        print('Not forwarding packet {}'.format(packet.pid()))
 
     def process_bpdus(self, bpdus) -> bool:
         if not bpdus:
@@ -237,7 +231,8 @@ class Bridge(object):
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
-        return [packet for packet in port.recv_all_packets() for port in ready_ports]
+        # return [packet for port in ready_ports for packet in port.recv_all_packets()]
+        return [port.recv_packet() for port in ready_ports]
 
     def send_bpdus(self):
         bpdu = self.make_bpdu()
@@ -326,6 +321,7 @@ def bucket_by_port(bpdus):
         res[bpdu.port].append(bpdu)
 
     return res
+
 
 if __name__ == '__main__':
     BRIDGE = Bridge(argv[1], argv[2:])
