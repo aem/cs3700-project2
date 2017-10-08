@@ -5,7 +5,10 @@ from json import dumps, loads
 from select import select
 from socket import AF_UNIX, SOCK_SEQPACKET, socket
 from sys import argv
+from time import time
 
+# The minimum interval between BPDU sends, in seconds
+MIN_BPDU_INTERVAL = 0.5
 # Maximum receivable packet size, in bytes
 MAX_PACKET_SIZE = 1500
 # Timeout for selecting ready sockets, in seconds
@@ -54,14 +57,11 @@ class Port(socket):
         self.connect(pad(lan))
 
     def recv_packet(self) -> Packet:
-        print('Receiving on port {}'.format(self.num))
         msg = self.recv(MAX_PACKET_SIZE)
 
         if not msg:
-            print('Got nothing')
             return None
 
-        print('Got something')
         msg_dict = loads(msg.decode('utf-8'))
         packet_type = PacketType[msg_dict['type'].upper()]
 
@@ -83,7 +83,6 @@ class Port(socket):
             'message': packet.message
         }
 
-        print(packet_dict)
         packet_str = dumps(packet_dict)
 
         print('Sending {} packet on port {}'.format(packet.type.name, self.num))
@@ -97,12 +96,14 @@ class Bridge(object):
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
+        self.last_bpdu_send = 0
         self.update_root(self.bridge_id)
 
     def run(self):
         while True:
             packets = self.read_packets()
             self.process_packets(packets)
+            self.send_bpdus()
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
@@ -135,14 +136,19 @@ class Bridge(object):
         self.root_port = None
         self.root_cost = 0
 
-        self.send_bpdus()
+        self.send_bpdus(True)
 
-    def send_bpdus(self):
+    def send_bpdus(self, ignore_time=False):
+        if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
+            return
+
         bpdu = self.make_bpdu()
 
         _, ready_ports, _ = select([], self.ports, [], SELECT_TIMEOUT)
         for port in ready_ports:
             port.send_packet(bpdu)
+
+        self.last_bpdu_send = time()
 
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
