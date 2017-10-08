@@ -21,9 +21,10 @@ class PacketType(Enum):
 
 
 class Packet(object):
-    def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
+    def __init__(self, source: str, sent_port: int, recvd_port: int, dest: str, p_type: PacketType, message: dict):
         self.source = source
-        self.port = port
+        self.sent_port = sent_port
+        self.recvd_port = recvd_port
         self.dest = dest
         self.type = p_type
         self.message = message
@@ -36,6 +37,7 @@ class Packet(object):
     def bpdu(source: int, root: int, cost: int):
         """Build a BPDU"""
         return Packet(serialize_address(source),
+                      -1,
                       -1,
                       'ffff',
                       PacketType.BPDU,
@@ -62,6 +64,7 @@ class Port(socket):
         packet_type = PacketType[msg_dict['type'].upper()]
 
         packet = Packet(msg_dict['source'],
+                        msg_dict['port'],
                         self.num,
                         msg_dict['dest'],
                         packet_type,
@@ -77,7 +80,8 @@ class Port(socket):
             'source': packet.source,
             'dest': packet.dest,
             'type': packet.type.name.lower(),
-            'message': packet.message
+            'message': packet.message,
+            'port': self.num
         }
 
         packet_str = dumps(packet_dict)
@@ -131,11 +135,11 @@ class Bridge(object):
         other_id = deserialize_address(bpdu.source)
 
         if other_root < self.root_bridge:
-            self.update_root(other_root, other_id, bpdu.port, other_cost + 1)
+            self.update_root(other_root, other_id, bpdu.recvd_port, other_cost + 1)
         elif other_root == self.root_bridge and other_cost < (self.root_cost - 1):
-            self.update_next_bridge(other_id, bpdu.port, other_cost + 1)
+            self.update_next_bridge(other_id, bpdu.recvd_port, other_cost + 1)
 
-        self.bpdus[bpdu.port].append(bpdu)
+        self.bpdus[bpdu.recvd_port].append(bpdu)
 
     def update_root(self, new_root_id: int, new_next_bridge: int, new_root_port: int, new_root_cost: int):
         self.root_bridge = new_root_id
@@ -167,9 +171,18 @@ class Bridge(object):
     def designate_ports(self):
         for port_num, bpdus in self.bpdus.items():
             self.clean_stale_bpdus(bpdus)
+            active = True
 
-            low_bpdu = lowest_bpdu(bpdus + [self.make_bpdu()])
-            self.ports[port_num].is_open = deserialize_address(low_bpdu.source) == self.bridge_id
+            from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) == self.bridge_id]
+
+            if from_me:
+                min_sent_port = min([bpdu.sent_port for bpdu in from_me])
+                active &= port_num < min_sent_port
+
+            low_bpdu = lowest_bpdu(bpdus)
+            active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
+
+            self.ports[port_num].is_open = active
 
     def clean_stale_bpdus(self, bpdus: list):
         to_remove = []
