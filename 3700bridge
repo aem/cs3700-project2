@@ -13,6 +13,8 @@ MIN_BPDU_INTERVAL = 0.5
 MAX_PACKET_SIZE = 1500
 # Timeout for selecting ready sockets, in seconds
 SELECT_TIMEOUT = 0.2
+# Enable verbose logging
+VERBOSE = False
 
 
 class PacketType(Enum):
@@ -70,8 +72,9 @@ class Port(socket):
                         packet_type,
                         msg_dict['message'])
 
-        print('Received {} packet from {}'.format(
-            packet.type.name, packet.source))
+        if VERBOSE:
+            print('Received {} packet from {}'.format(
+                packet.type.name, packet.source))
 
         return packet
 
@@ -86,7 +89,9 @@ class Port(socket):
 
         packet_str = dumps(packet_dict)
 
-        print('Sending {} packet on port {}'.format(packet.type.name, self.num))
+        if VERBOSE:
+            print('Sending {} packet on port {}'.format(packet.type.name, self.num))
+
         self.sendall(packet_str.encode('utf-8'))
 
 
