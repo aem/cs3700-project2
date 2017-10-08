@@ -90,7 +90,8 @@ class Port(socket):
         packet_str = dumps(packet_dict)
 
         if VERBOSE:
-            print('Sending {} packet on port {}'.format(packet.type.name, self.num))
+            print('Sending {} packet on port {}'.format(
+                packet.type.name, self.num))
 
         self.sendall(packet_str.encode('utf-8'))
 
@@ -140,8 +141,11 @@ class Bridge(object):
         other_id = deserialize_address(bpdu.source)
 
         if other_root < self.root_bridge:
-            self.update_root(other_root, other_id, bpdu.recvd_port, other_cost + 1)
-        elif other_root == self.root_bridge and other_cost < (self.root_cost - 1):
+            self.update_root(other_root, other_id,
+                             bpdu.recvd_port, other_cost + 1)
+        elif (other_root == self.root_bridge and
+              (other_cost < (self.root_cost - 1) or
+               other_cost == (self.root_cost - 1) and other_id < self.next_bridge)):
             self.update_next_bridge(other_id, bpdu.recvd_port, other_cost + 1)
 
         self.bpdus[bpdu.recvd_port].append(bpdu)
@@ -183,7 +187,8 @@ class Bridge(object):
                 print('Active (root port): True')
                 continue
 
-            from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) == self.bridge_id]
+            from_me = [bpdu for bpdu in bpdus if deserialize_address(
+                bpdu.source) == self.bridge_id]
             active = True
 
             if from_me:
@@ -191,12 +196,15 @@ class Bridge(object):
                 active &= port_num < min_sent_port
                 print('Active (self-connected): {}'.format(active))
 
-            not_from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) != self.bridge_id]
+            not_from_me = [bpdu for bpdu in bpdus if deserialize_address(
+                bpdu.source) != self.bridge_id]
             low_bpdu = lowest_bpdu(not_from_me)
 
             if low_bpdu:
-                print('Low source: {}/{}/{}'.format(low_bpdu.source, low_bpdu.message['root'], low_bpdu.message['cost']))
-                print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id), serialize_address(self.root_bridge), self.root_cost))
+                print('Low source: {}/{}/{}'.format(low_bpdu.source,
+                                                    low_bpdu.message['root'], low_bpdu.message['cost']))
+                print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id),
+                                                    serialize_address(self.root_bridge), self.root_cost))
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
                 print('Active (lowest BPDU): {}'.format(active))
 
