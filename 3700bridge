@@ -195,7 +195,7 @@ class Bridge(object):
             low_bpdu = lowest_bpdu(not_from_me)
 
             if low_bpdu:
-                print('Low source: {}/{}'.format(low_bpdu.source, low_bpdu.message['root']))
+                print('Low source: {}/{}/{}'.format(low_bpdu.source, low_bpdu.message['root'], low_bpdu.message['cost']))
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
                 print('Active (lowest BPDU): {}'.format(active))
 
