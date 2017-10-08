@@ -97,7 +97,6 @@ class Bridge(object):
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
-        self.seen_packets = []
         self.root_bridge = -1
         self.root_port = -1
         self.root_cost = -1
@@ -128,7 +127,8 @@ class Bridge(object):
         if self.root_bridge != new_root:
             self.root_bridge = new_root
             changed = True
-            print('New root: {}/{}'.format(serialize_address(self.bridge_id), new_root))
+            print('New root: {}/{}'.format(serialize_address(self.bridge_id),
+                                           serialize_address(new_root)))
 
         if self.root_port != new_port:
             self.update_root_port(new_port)
@@ -190,11 +190,6 @@ class Bridge(object):
             self.routing_table.pop(bridge_id, False)
 
     def process_packet(self, packet):
-        if packet.pid() in self.seen_packets:
-            self.drop_packet(packet)
-            return
-
-        self.seen_packets.append(packet.pid())
         if self.routing_table.get(packet.dest):
             port = self.ports[self.routing_table[packet.dest].port_id]
             if port and port.is_open:
@@ -272,6 +267,7 @@ class Bridge(object):
     def close_port(self, port):
         self.ports[port].is_open = False
 
+
 def pad(name: str) -> str:
     """
     Pads the name with null bytes
@@ -290,7 +286,7 @@ def serialize_address(addr: int) -> str:
     """
     Serialize the decimal address into a hex string
     """
-    return hex(addr)[2:]
+    return '{:04x}'.format(addr)
 
 
 def filter_bpdus(packets):
@@ -352,6 +348,7 @@ def bucket_by_port(bpdus):
 
     return res
 
+
 def bucket_by_lan(bpdus, ports):
     """
     Bucket the BPDUs by their LAN
@@ -360,6 +357,7 @@ def bucket_by_lan(bpdus, ports):
     for bpdu in bpdus:
         res[ports[bpdu.port].lan].append(bpdu)
     return res
+
 
 if __name__ == '__main__':
     BRIDGE = Bridge(argv[1], argv[2:])
