@@ -177,6 +177,8 @@ class Bridge(object):
         for port_num, bpdus in self.bpdus.items():
             self.clean_stale_bpdus(bpdus)
 
+            print('Port: {}'.format(port_num))
+
             if port_num == self.root_port:
                 print('Active (root port): True')
                 continue
@@ -186,7 +188,6 @@ class Bridge(object):
 
             if from_me:
                 min_sent_port = min([bpdu.sent_port for bpdu in from_me])
-                print('Port: {}, Min: {}'.format(port_num, min_sent_port))
                 active &= port_num < min_sent_port
                 print('Active (self-connected): {}'.format(active))
 
