@@ -181,12 +181,14 @@ class Bridge(object):
                 active &= port_num < min_sent_port
                 print('Active (self-connected): {}'.format(active))
 
-            low_bpdu = lowest_bpdu(bpdus)
+            not_from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) != self.bridge_id]
+            low_bpdu = lowest_bpdu(not_from_me)
 
             if low_bpdu:
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
                 print('Active (lowest BPDU): {}'.format(active))
 
+            print('Active: {}'.format(active))
             self.ports[port_num].is_open = active
 
     def clean_stale_bpdus(self, bpdus: list):
