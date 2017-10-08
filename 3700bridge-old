@@ -1,0 +1,323 @@
+#!/usr/bin/python3 -u
+
+from collections import defaultdict
+from enum import Enum
+from json import dumps, loads
+from select import select
+from socket import AF_UNIX, SOCK_SEQPACKET, socket
+from sys import argv
+from time import sleep, time
+
+# The length of time to wait for ports to be ready to read/write, in seconds
+SELECT_TIMEOUT = 0.25
+# The maximum number of bytes to read per recv
+MAX_PACKET_SIZE = 1500
+# The maximum number of packets to read from a port at once
+MAX_PACKETS_RECV = 100
+# The minimum length of each main loop cycle, in seconds
+MIN_THREAD_SLEEP = 0.5
+# The TTL for each routing table entry, in seconds
+ENTRY_TIMEOUT = 5
+
+
+class PacketType(Enum):
+    BPDU = 1
+    DATA = 2
+
+
+class Packet(object):
+    def __init__(self, source: int, port: int, dest: int, p_type: PacketType, message: dict):
+        self.source = source
+        self.port = port
+        self.dest = dest
+        self.type = p_type
+        self.message = message
+
+    def pid(self):
+        return self.message['id']
+
+    @staticmethod
+    def bpdu(source: int, root: int, cost: int):
+        return Packet(source,
+                      -1,
+                      deserialize_address('ffff'),
+                      PacketType.BPDU,
+                      {
+                          'id': '1234',
+                          'root': serialize_address(root),
+                          'cost': cost
+                      })
+
+
+class Port(socket):
+    def __init__(self, num: int, lan: str):
+        super().__init__(AF_UNIX, SOCK_SEQPACKET)
+
+        self.num = num
+        self.lan = lan
+        self.is_open = True
+
+        self.connect(pad(lan))
+
+    def recv_packet(self) -> Packet:
+        msg = self.recv(MAX_PACKET_SIZE)
+
+        if not msg:
+            return None
+
+        msg_dict = loads(msg.decode('utf-8'))
+
+        packet_type = PacketType[msg_dict['type'].upper()]
+
+        return Packet(msg_dict['source'], self.num, msg_dict['dest'],
+                      packet_type, msg_dict['message'])
+
+    def send_packet(self, packet: Packet):
+        packet_dict = {
+            'source': packet.source,
+            'dest': packet.dest,
+            'type': packet.type.name.lower(),
+            'message': packet.message
+        }
+
+        packet_str = dumps(packet_dict)
+        self.sendall(packet_str.encode('utf-8'))
+
+
+class RoutingEntry(object):
+    def __init__(self, port_id: int):
+        self.port_id = port_id
+        self.created_at = time()
+
+
+class Bridge(object):
+    def __init__(self, bridge_id: str, lans):
+        print('Bridge {} starting up'.format(bridge_id))
+
+        self.bridge_id = deserialize_address(bridge_id)
+        self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
+
+        self.root_bridge = -1
+        self.root_port = -1
+        self.root_cost = -1
+        self.next_bridge = -1
+
+        bpdu = Packet.bpdu(self.bridge_id, self.bridge_id, 0)
+        self.update_root(bpdu)
+
+    def make_bpdu(self) -> Packet:
+        return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
+
+    def update_root(self, low_bpdu: Packet) -> bool:
+        if not low_bpdu:
+            return False
+
+        changed = False
+
+        new_root = deserialize_address(low_bpdu.message['root'])
+        new_port = low_bpdu.port
+        new_cost = low_bpdu.message['cost'] + 1
+        new_next = deserialize_address(low_bpdu.message['id'])
+
+        if self.root_bridge != new_root:
+            self.root_bridge = new_root
+            changed = True
+            print('New root: {}/{}'.format(serialize_address(self.bridge_id),
+                                           serialize_address(new_root)))
+
+        if self.root_port != new_port:
+            self.update_root_port(new_port)
+            changed = True
+
+        if changed:
+            self.root_cost = new_cost
+            self.next_bridge = new_next
+            self.root_bpdu = low_bpdu
+
+        return changed
+
+    def update_root_port(self, root_port: int):
+        self.root_port = root_port
+        print('Root port: {}/{}'.format(serialize_address(self.bridge_id), root_port))
+
+    def run(self):
+        cycle_start = 0
+        while True:
+
+            cycle_length = time() - cycle_start
+            if cycle_length > MIN_THREAD_SLEEP:
+                self.send_bpdus()
+                cycle_start = time()
+
+            packets = self.read_packets()
+
+            if packets:
+                bpdus = filter_bpdus(packets)
+                data = filter_data(packets)
+
+                self.process_bpdus(bpdus)
+                self.process_data(data)
+
+            print([port.is_open for port in self.ports])
+
+    def process_data(self, data_packets):
+        for packet in data_packets:
+            self.process_data_packet(packet)
+
+    def process_data_packet(self, packet):
+        print('Received message {}, on port {} from {} to {}'.format(
+            packet.pid(), packet.port, packet.source, packet.dest))
+        self.process_packet(packet)
+
+    def process_packet(self, packet):
+        self.broadcast_packet(packet)
+
+    def forward_packet(self, packet: Packet, port: Port):
+        print('Forwarding message {} to port {}'.format(
+            packet.pid(), port.num))
+        port.send_packet(packet)
+
+    def broadcast_packet(self, packet: Packet):
+        print('Broadcasting message {} to all ports'.format(packet.pid()))
+        for port in self.ports:
+            if port.is_open:
+                port.send_packet(packet)
+
+    def drop_packet(self, packet: Packet):
+        print('Not forwarding packet {}'.format(packet.pid()))
+
+    def process_bpdus(self, bpdus: list):
+        if not bpdus:
+            return
+
+        updated_root = self.maybe_update_root(bpdus)
+
+        if not updated_root:
+            return
+
+        self.update_ports()
+
+
+    def maybe_update_root(self, bpdus: list) -> bool:
+        bpdus_to_consider = bpdus + [self.make_bpdu()]
+        low_bpdu = lowest_bpdu(bpdus_to_consider)
+
+        if low_bpdu.source == self.bridge_id:
+            return False
+
+        self.update_root(low_bpdu)
+        return True
+
+    def update_ports(self, bpdus: list):
+
+
+
+    def read_packets(self):
+        ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
+        return [port.recv_packet() for port in ready_ports]
+
+    def send_bpdus(self):
+        bpdu = self.make_bpdu()
+
+        _, ready_ports, _ = select([], self.ports, [], SELECT_TIMEOUT)
+        for port in ready_ports:
+            port.send_packet(bpdu)
+
+    def close_port(self, port):
+        self.ports[port].is_open = False
+
+
+def pad(name: str) -> str:
+    """
+    Pads the name with null bytes
+    """
+    return '\0{}{}'.format(name, '\0' * (107 - len(name)))
+
+
+def deserialize_address(addr: str) -> int:
+    """
+    Deserialize the hex address into a decimal number
+    """
+    return int(addr, 16)
+
+
+def serialize_address(addr: int) -> str:
+    """
+    Serialize the decimal address into a hex string
+    """
+    return '{:04x}'.format(addr)
+
+
+def filter_bpdus(packets):
+    """
+    Get all the BPDUs
+    """
+    return filter_packets_by_type(packets, PacketType.BPDU)
+
+
+def filter_data(packets):
+    """
+    Get all the data packets
+    """
+    return filter_packets_by_type(packets, PacketType.DATA)
+
+
+def filter_packets_by_type(packets, packet_type: PacketType):
+    """
+    Get all the packets of the given type
+    """
+    return [packet for packet in packets if packet.type is packet_type]
+
+
+def lowest_bpdu(bpdus) -> Packet:
+    """
+    Get the lowest BPDU
+    """
+    if not bpdus:
+        return None
+
+    low_bpdu = bpdus[0]
+    for bpdu in bpdus[1:]:
+        if bpdu_less_than(bpdu, low_bpdu):
+            low_bpdu = bpdu
+
+    return low_bpdu
+
+
+def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
+    """
+    Is bpdu1 less than bpdu2?
+    """
+    msg1 = bpdu1.message
+    msg2 = bpdu2.message
+
+    return (deserialize_address(msg1['root']) < deserialize_address(msg2['root']) or
+            msg1['cost'] < msg2['cost'] or
+            deserialize_address(msg1['id']) < deserialize_address(msg2['id']))
+
+
+def bucket_by_port(bpdus):
+    """
+    Bucket the BPDUs by which port they came in on
+    """
+    res = defaultdict(list)
+
+    for bpdu in bpdus:
+        res[bpdu.port].append(bpdu)
+
+    return res
+
+
+def bucket_by_lan(bpdus, ports):
+    """
+    Bucket the BPDUs by their LAN
+    """
+    res = defaultdict(list)
+    for bpdu in bpdus:
+        res[ports[bpdu.port].lan].append(bpdu)
+    return res
+
+
+if __name__ == '__main__':
+    BRIDGE = Bridge(argv[1], argv[2:])
+    BRIDGE.run()
