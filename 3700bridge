@@ -196,7 +196,7 @@ class Bridge(object):
 
             if low_bpdu:
                 print('Low source: {}/{}/{}'.format(low_bpdu.source, low_bpdu.message['root'], low_bpdu.message['cost']))
-                print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id), serialize_address(self.root_bridge), self.root_cost)
+                print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id), serialize_address(self.root_bridge), self.root_cost))
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
                 print('Active (lowest BPDU): {}'.format(active))
 
