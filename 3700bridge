@@ -54,11 +54,14 @@ class Port(socket):
         self.connect(pad(lan))
 
     def recv_packet(self) -> Packet:
+        print('Receiving on port {}'.format(self.num))
         msg = self.recv(MAX_PACKET_SIZE)
 
         if not msg:
+            print('Got nothing')
             return None
 
+        print('Got something')
         msg_dict = loads(msg.decode('utf-8'))
         packet_type = PacketType[msg_dict['type'].upper()]
 
@@ -98,12 +101,12 @@ class Bridge(object):
     def run(self):
         while True:
             packets = self.read_packets()
-            print('Received {} packets'.format(len(packets)))
             self.process_packets(packets)
 
     def read_packets(self):
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
-        return [port.recv_packet() for port in ready_ports]
+        packets = [port.recv_packet() for port in ready_ports]
+        return [packet for packet in packets if packet]
 
     def process_packets(self, packets: list):
         bpdus = filter_bpdus(packets)
