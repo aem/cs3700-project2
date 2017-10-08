@@ -153,7 +153,7 @@ class Bridge(object):
             if cycle_length > MIN_THREAD_SLEEP:
                 self.send_bpdus()
                 cycle_start = time()
-                
+
             packets = self.read_packets()
 
             if packets:
@@ -180,9 +180,14 @@ class Bridge(object):
         self.routing_table[packet.source] = RoutingEntry(packet.port)
 
     def update_routing_table_ttls(self):
-        for bridge, entry in self.routing_table.items():
+        to_remove = set()
+
+        for bridge_id, entry in self.routing_table.items():
             if time() - entry.created_at >= ENTRY_TIMEOUT:
-                self.routing_table.pop(bridge, False)
+                to_remove.add(bridge_id)
+
+        for bridge_id in to_remove:
+            self.routing_table.pop(bridge_id, False)
 
     def process_packet(self, packet):
         if packet.pid() in self.seen_packets:
@@ -234,7 +239,7 @@ class Bridge(object):
                     should_flush_table = True
 
         bpdus_by_port = bucket_by_port(bpdus)
-        
+
         for port, port_bpdus in bpdus_by_port.items():
             if port == self.root_port:
                 continue
