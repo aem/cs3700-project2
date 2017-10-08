@@ -179,11 +179,13 @@ class Bridge(object):
                 min_sent_port = min([bpdu.sent_port for bpdu in from_me])
                 print('Port: {}, Min: {}'.format(port_num, min_sent_port))
                 active &= port_num < min_sent_port
+                print('Active (self-connected): {}'.format(active))
 
             low_bpdu = lowest_bpdu(bpdus)
 
             if low_bpdu:
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
+                print('Active (lowest BPDU): {}'.format(active))
 
             self.ports[port_num].is_open = active
 
