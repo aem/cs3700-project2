@@ -113,7 +113,7 @@ class Bridge(object):
             packets = self.read_packets()
             self.process_packets(packets)
 
-            print([port.lan for port in self.ports if port.is_open])
+            print('Ports: {}'.format([port.lan for port in self.ports if port.is_open]))
 
             self.send_bpdus()
 
