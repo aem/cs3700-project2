@@ -178,6 +178,7 @@ class Bridge(object):
             self.clean_stale_bpdus(bpdus)
 
             if port_num == self.root_port:
+                print('Active (root port): True')
                 continue
 
             from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) == self.bridge_id]
