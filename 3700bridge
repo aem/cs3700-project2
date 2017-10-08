@@ -266,7 +266,7 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
 
     return (deserialize_address(msg1['root']) < deserialize_address(msg2['root']) or
             msg1['cost'] < msg2['cost'] or
-            deserialize_address(msg1['id']) < deserialize_address(msg2['id']))
+            deserialize_address(bpdu1.source) < deserialize_address(bpdu2.source))
 
 
 if __name__ == '__main__':
