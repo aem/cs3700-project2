@@ -83,6 +83,7 @@ class Port(socket):
             'message': packet.message
         }
 
+        print(packet_dict)
         packet_str = dumps(packet_dict)
 
         print('Sending {} packet on port {}'.format(packet.type.name, self.num))
