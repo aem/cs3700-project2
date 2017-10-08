@@ -143,8 +143,7 @@ class Bridge(object):
         self.root_port = new_root_port
         self.root_cost = new_root_cost
 
-        print(self.next_bridge)
-        print('Next: {}, Cost: {}'.format(serialize_address(self.next_bridge), self.root_cost))
+        print('Next: {}, Cost: {}'.format(serialize_address(self.next_bridge) if self.next_bridge else None, self.root_cost))
 
     def send_bpdus(self, ignore_time=False):
         if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
