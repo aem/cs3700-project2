@@ -64,7 +64,7 @@ class Port(socket):
         packet_type = PacketType[msg_dict['type'].upper()]
 
         packet = Packet(msg_dict['source'],
-                        msg_dict['port'],
+                        msg_dict.get('port', -1),
                         self.num,
                         msg_dict['dest'],
                         packet_type,
