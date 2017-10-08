@@ -39,11 +39,7 @@ class Packet(object):
                       -1,
                       'ffff',
                       PacketType.BPDU,
-                      {
-                          'id': '1234',
-                          'root': serialize_address(root),
-                          'cost': cost
-        })
+                      {'id': '1234', 'root': serialize_address(root), 'cost': cost})
 
 
 class Port(socket):
@@ -71,7 +67,8 @@ class Port(socket):
                         packet_type,
                         msg_dict['message'])
 
-        print('Received {} packet from {}'.format(packet.type.name, packet.source))
+        print('Received {} packet from {}'.format(
+            packet.type.name, packet.source))
 
         return packet
 
@@ -97,7 +94,7 @@ class Bridge(object):
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
         self.last_bpdu_send = 0
-        self.update_root(self.bridge_id)
+        self.update_root(self.bridge_id, None, None, 0)
 
     def run(self):
         while True:
@@ -123,20 +120,28 @@ class Bridge(object):
 
     def process_bpdu(self, bpdu: Packet):
         other_root = deserialize_address(bpdu.message['root'])
-        if other_root < self.root_bridge:
-            self.update_root(other_root)
+        other_cost = bpdu.message['cost']
+        other_id = deserialize_address(bpdu.source)
 
-    def update_root(self, new_root_id: int):
+        if other_root < self.root_bridge:
+            self.update_root(other_root, other_id, bpdu.port, other_cost + 1)
+        elif other_root == self.root_bridge and other_cost < (self.root_cost - 1):
+            self.update_next_bridge(other_id, bpdu.port, other_cost + 1)
+
+    def update_root(self, new_root_id: int, new_next_bridge: int, new_root_port: int, new_root_cost: int):
         self.root_bridge = new_root_id
+        self.update_next_bridge(new_next_bridge, new_root_port, new_root_cost)
+
         print('New root: {}/{}'.format(
             serialize_address(self.bridge_id),
             serialize_address(self.root_bridge)))
 
-        # TODO
-        self.root_port = None
-        self.root_cost = 0
-
         self.send_bpdus(True)
+
+    def update_next_bridge(self, new_next_bridge: int, new_root_port: int, new_root_cost: int):
+        self.next_bridge = new_next_bridge
+        self.root_port = new_root_port
+        self.root_cost = new_root_cost
 
     def send_bpdus(self, ignore_time=False):
         if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
