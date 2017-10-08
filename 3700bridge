@@ -180,7 +180,9 @@ class Bridge(object):
                 active &= port_num < min_sent_port
 
             low_bpdu = lowest_bpdu(bpdus)
-            active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
+
+            if low_bpdu:
+                active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
 
             self.ports[port_num].is_open = active
 
