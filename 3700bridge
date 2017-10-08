@@ -96,10 +96,15 @@ class Bridge(object):
         self.last_bpdu_send = 0
         self.update_root(self.bridge_id, None, None, 0)
 
+        self.bpdus = {port.num: [] for port in self.ports}
+
     def run(self):
         while True:
             packets = self.read_packets()
             self.process_packets(packets)
+
+            print([port.lan for port in self.ports if port.is_open])
+
             self.send_bpdus()
 
     def read_packets(self):
@@ -118,6 +123,8 @@ class Bridge(object):
         for bpdu in bpdus:
             self.process_bpdu(bpdu)
 
+        self.designate_ports()
+
     def process_bpdu(self, bpdu: Packet):
         other_root = deserialize_address(bpdu.message['root'])
         other_cost = bpdu.message['cost']
@@ -127,6 +134,8 @@ class Bridge(object):
             self.update_root(other_root, other_id, bpdu.port, other_cost + 1)
         elif other_root == self.root_bridge and other_cost < (self.root_cost - 1):
             self.update_next_bridge(other_id, bpdu.port, other_cost + 1)
+
+        self.bpdus[bpdu.port].append(bpdu)
 
     def update_root(self, new_root_id: int, new_next_bridge: int, new_root_port: int, new_root_cost: int):
         self.root_bridge = new_root_id
@@ -143,8 +152,6 @@ class Bridge(object):
         self.root_port = new_root_port
         self.root_cost = new_root_cost
 
-        print('Next: {}, Cost: {}'.format(serialize_address(self.next_bridge) if self.next_bridge else None, self.root_cost))
-
     def send_bpdus(self, ignore_time=False):
         if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
             return
@@ -156,6 +163,23 @@ class Bridge(object):
             port.send_packet(bpdu)
 
         self.last_bpdu_send = time()
+
+    def designate_ports(self):
+        for port_num, bpdus in self.bpdus.items():
+            self.clean_stale_bpdus(bpdus)
+
+            low_bpdu = lowest_bpdu(bpdus + [self.make_bpdu()])
+            self.ports[port_num].is_open = deserialize_address(low_bpdu.source) == self.bridge_id
+
+    def clean_stale_bpdus(self, bpdus: list):
+        to_remove = []
+
+        for i, bpdu in enumerate(bpdus):
+            if deserialize_address(bpdu.message['root']) != self.root_bridge:
+                to_remove.append(i)
+
+        for i in to_remove:
+            del bpdus[i]
 
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
