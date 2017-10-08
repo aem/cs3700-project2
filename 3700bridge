@@ -176,8 +176,8 @@ class Bridge(object):
             from_me = [bpdu for bpdu in bpdus if deserialize_address(bpdu.source) == self.bridge_id]
 
             if from_me:
-                print('From me: ' + str(from_me))
                 min_sent_port = min([bpdu.sent_port for bpdu in from_me])
+                print('Port: {}, Min: {}'.format(port_num, min_sent_port))
                 active &= port_num < min_sent_port
 
             low_bpdu = lowest_bpdu(bpdus)
