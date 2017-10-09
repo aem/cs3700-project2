@@ -199,6 +199,10 @@ class Bridge(object):
 
             not_from_me = [bpdu for bpdu in bpdus if deserialize_address(
                 bpdu.source) != self.bridge_id]
+
+            for bpdu in not_from_me:
+                print('{}/{}/{}'.format(bpdu.source, bpdu.message['root'], bpdu.message['cost']))
+
             low_bpdu = lowest_bpdu(not_from_me)
 
             if low_bpdu:
