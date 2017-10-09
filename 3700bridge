@@ -201,7 +201,8 @@ class Bridge(object):
                 bpdu.source) != self.bridge_id]
 
             for bpdu in not_from_me:
-                print('{}/{}/{}'.format(bpdu.source, bpdu.message['root'], bpdu.message['cost']))
+                print('{}/{}/{}'.format(bpdu.source,
+                                        bpdu.message['root'], bpdu.message['cost']))
 
             low_bpdu = lowest_bpdu(not_from_me)
 
@@ -223,8 +224,8 @@ class Bridge(object):
             if deserialize_address(bpdu.message['root']) != self.root_bridge:
                 to_remove.append(i)
 
-        for i in to_remove:
-            del bpdus[i]
+        for i, bpdu_index in enumerate(to_remove):
+            del bpdus[bpdu_index - i]
 
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
