@@ -179,7 +179,7 @@ class Bridge(object):
 
         if self.root_port != new_root_port:
             self.root_port = new_root_port
-            print('Root port: {}/{}'.format(self.bridge_id, self.root_port))
+            print('Root port: {}/{}'.format(serialize_address(self.bridge_id), self.root_port))
 
     def send_bpdus(self, ignore_time=False):
         if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
@@ -241,7 +241,7 @@ class Bridge(object):
 
             if port.is_open is not active:
                 status = 'Designated' if active else 'Disabled'
-                print('{} port: {}/{}'.format(status, self.bridge_id, port_num))
+                print('{} port: {}/{}'.format(status, serialize_address(self.bridge_id), port_num))
 
             port.is_open = active
 
