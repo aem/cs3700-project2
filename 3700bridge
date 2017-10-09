@@ -8,6 +8,10 @@ from socket import AF_UNIX, SOCK_SEQPACKET, socket
 from sys import argv
 from time import time
 
+# Timeout for received BPDUs, in seconds
+BPDU_TIMEOUT = 0.75
+# Timeout for forwarding table entries, in seconds
+FORWARDING_TIMEOUT = 0.5
 # The minimum interval between BPDU sends, in seconds
 MIN_BPDU_INTERVAL = 0.5
 # Maximum receivable packet size, in bytes
@@ -34,11 +38,12 @@ class PacketType(Enum):
 
 
 class Packet(object):
-    def __init__(self, source: str, sent_port: int, recvd_port: int,
+    def __init__(self, source: str, sent_port: int, recvd_port: int, recvd_time: int,
                  dest: str, p_type: PacketType, message: dict):
         self.source = source
         self.sent_port = sent_port
         self.recvd_port = recvd_port
+        self.recvd_time = recvd_time
         self.dest = dest
         self.type = p_type
         self.message = message
@@ -51,6 +56,7 @@ class Packet(object):
     def bpdu(source: int, root: int, cost: int):
         """Build a BPDU"""
         return Packet(serialize_address(source),
+                      -1,
                       -1,
                       -1,
                       'ffff',
@@ -80,6 +86,7 @@ class Port(socket):
         packet = Packet(msg_dict['source'],
                         msg_dict.get('port', -1),
                         self.num,
+                        time(),
                         msg_dict['dest'],
                         packet_type,
                         msg_dict['message'])
@@ -122,6 +129,16 @@ class ForwardingTable(object):
     def get_port(self, source: str) -> int:
         entry = self.table.get(source)
         return entry.port if entry else None
+
+    def timeout_entries(self):
+        timed_out_keys = set()
+
+        for source, entry in self.table.items():
+            if timed_out(entry.time_added, FORWARDING_TIMEOUT):
+                timed_out_keys.add(source)
+
+        for key in timed_out_keys:
+            del self.table[key]
 
     def flush(self):
         self.table.clear()
@@ -222,10 +239,11 @@ class Bridge(object):
 
         if self.root_port != new_root_port:
             self.root_port = new_root_port
-            print('Root port: {}/{}'.format(serialize_address(self.bridge_id), self.root_port))
+            print(
+                'Root port: {}/{}'.format(serialize_address(self.bridge_id), self.root_port))
 
     def send_bpdus(self, ignore_time=False):
-        if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
+        if not ignore_time and not timed_out(self.last_bpdu_send, MIN_BPDU_INTERVAL):
             return
 
         bpdu = self.make_bpdu()
@@ -286,7 +304,8 @@ class Bridge(object):
                 self.forwarding_table.flush()
 
                 status = 'Designated' if active else 'Disabled'
-                print('{} port: {}/{}'.format(status, serialize_address(self.bridge_id), port_num))
+                print('{} port: {}/{}'.format(status,
+                                              serialize_address(self.bridge_id), port_num))
 
             port.is_open = active
 
@@ -294,11 +313,11 @@ class Bridge(object):
         to_remove = []
 
         for i, bpdu in enumerate(bpdus):
-            if deserialize_address(bpdu.message['root']) != self.root_bridge:
+            if (deserialize_address(bpdu.message['root']) != self.root_bridge or
+                    timed_out(bpdu.recvd_time, BPDU_TIMEOUT)):
                 to_remove.append(i)
 
-        for i, bpdu_index in enumerate(to_remove):
-            del bpdus[bpdu_index - i]
+        remove_all(bpdus, to_remove)
 
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
@@ -384,6 +403,16 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
     return ((root1 < root2) or
             (root1 == root2 and cost1 < cost2) or
             (root1 == root2 and cost1 == cost2 and id1 < id2))
+
+
+def remove_all(l: list, indices_to_remove: list):
+    """Remove all the elements at the given indicies from the given list"""
+    for i, index_to_remove in enumerate(indices_to_remove):
+        del l[index_to_remove - i]
+
+
+def timed_out(t: int, timeout: int) -> bool:
+    return time() - t >= timeout
 
 
 if __name__ == '__main__':
