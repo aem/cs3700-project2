@@ -113,7 +113,8 @@ class Bridge(object):
             packets = self.read_packets()
             self.process_packets(packets)
 
-            print('Ports: {}'.format([port.lan for port in self.ports if port.is_open]))
+            print('Ports: {}'.format(
+                [port.lan for port in self.ports if port.is_open]))
 
             self.send_bpdus()
 
@@ -272,9 +273,18 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
     msg1 = bpdu1.message
     msg2 = bpdu2.message
 
-    return (deserialize_address(msg1['root']) < deserialize_address(msg2['root']) or
-            msg1['cost'] < msg2['cost'] or
-            deserialize_address(bpdu1.source) < deserialize_address(bpdu2.source))
+    root1 = deserialize_address(msg1['root'])
+    root2 = deserialize_address(msg2['root'])
+
+    cost1 = msg1['cost']
+    cost2 = msg2['cost']
+
+    id1 = deserialize_address(bpdu1.source)
+    id2 = deserialize_address(bpdu2.source)
+
+    return ((root1 < root2) or
+            (root1 == root2 and cost1 < cost2) or
+            (root1 == root2 and cost1 == cost2 and id1 < id2))
 
 
 if __name__ == '__main__':
