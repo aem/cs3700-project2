@@ -120,7 +120,8 @@ class ForwardingTable(object):
         self.table[source] = ForwardingEntry(source, port, time())
 
     def get_port(self, source: str) -> int:
-        return self.table.get(source)
+        entry = self.table.get(source)
+        return entry.port if entry else None
 
     def flush(self):
         self.table.clear()
