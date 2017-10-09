@@ -166,6 +166,9 @@ class Bridge(object):
         bpdus = self.filter_bpdus(packets)
         data = self.filter_data(packets)
 
+        if VERBOSE and VERBOSE_FORWARDING:
+            print('Data: {}'.format(data))
+
         self.process_bpdus(bpdus)
         self.process_data(data)
 
