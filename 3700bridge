@@ -13,8 +13,15 @@ MIN_BPDU_INTERVAL = 0.5
 MAX_PACKET_SIZE = 1500
 # Timeout for selecting ready sockets, in seconds
 SELECT_TIMEOUT = 0.2
-# Enable verbose logging
+
+# Logging Flags
+
+# Enable general verbose logging
 VERBOSE = False
+# Enable packet send/receive logging
+VERBOSE_TXRX = True
+# Enable MST-related logging
+VERBOSE_MST = False
 
 
 class PacketType(Enum):
@@ -72,7 +79,7 @@ class Port(socket):
                         packet_type,
                         msg_dict['message'])
 
-        if VERBOSE:
+        if VERBOSE and VERBOSE_TXRX:
             print('Received {} packet from {}'.format(
                 packet.type.name, packet.source))
 
@@ -89,7 +96,7 @@ class Port(socket):
 
         packet_str = dumps(packet_dict)
 
-        if VERBOSE:
+        if VERBOSE and VERBOSE_TXRX:
             print('Sending {} packet on port {}'.format(
                 packet.type.name, self.num))
 
@@ -113,8 +120,9 @@ class Bridge(object):
             packets = self.read_packets()
             self.process_packets(packets)
 
-            print('Ports: {}'.format(
-                [port.lan for port in self.ports if port.is_open]))
+            if VERBOSE and VERBOSE_MST:
+                print('Ports: {}'.format(
+                    [port.lan for port in self.ports if port.is_open]))
 
             self.send_bpdus()
 
@@ -182,10 +190,13 @@ class Bridge(object):
         for port_num, bpdus in self.bpdus.items():
             self.clean_stale_bpdus(bpdus)
 
-            print('Port: {}'.format(port_num))
+            if VERBOSE and VERBOSE_MST:
+                print('Port: {}'.format(port_num))
 
             if port_num == self.root_port:
-                print('Active (root port): True')
+                if VERBOSE and VERBOSE_MST:
+                    print('Active (root port): True')
+
                 continue
 
             from_me = [bpdu for bpdu in bpdus if deserialize_address(
@@ -195,26 +206,33 @@ class Bridge(object):
             if from_me:
                 min_sent_port = min([bpdu.sent_port for bpdu in from_me])
                 active &= port_num < min_sent_port
-                print('Active (self-connected): {}'.format(active))
+
+                if VERBOSE and VERBOSE_MST:
+                    print('Active (self-connected): {}'.format(active))
 
             not_from_me = [bpdu for bpdu in bpdus if deserialize_address(
                 bpdu.source) != self.bridge_id]
 
             for bpdu in not_from_me:
-                print('{}/{}/{}'.format(bpdu.source,
+                if VERBOSE and VERBOSE_MST:
+                    print('{}/{}/{}'.format(bpdu.source,
                                         bpdu.message['root'], bpdu.message['cost']))
 
             low_bpdu = lowest_bpdu(not_from_me)
 
             if low_bpdu:
-                print('Low source: {}/{}/{}'.format(low_bpdu.source,
-                                                    low_bpdu.message['root'], low_bpdu.message['cost']))
-                print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id),
-                                                    serialize_address(self.root_bridge), self.root_cost))
                 active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
-                print('Active (lowest BPDU): {}'.format(active))
 
-            print('Active: {}'.format(active))
+                if VERBOSE and VERBOSE_MST:
+                    print('Low source: {}/{}/{}'.format(low_bpdu.source,
+                                                        low_bpdu.message['root'], low_bpdu.message['cost']))
+                    print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id),
+                                                        serialize_address(self.root_bridge), self.root_cost))
+                    print('Active (lowest BPDU): {}'.format(active))
+
+            if VERBOSE and VERBOSE_MST:
+                print('Active: {}'.format(active))
+
             self.ports[port_num].is_open = active
 
     def clean_stale_bpdus(self, bpdus: list):
