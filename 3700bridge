@@ -25,7 +25,7 @@ VERBOSE_TXRX = False
 # Enable MST-related logging
 VERBOSE_MST = False
 # Enable forwarding logging
-VERBOSE_FORWARDING = False
+VERBOSE_FORWARDING = True
 
 
 class PacketType(Enum):
@@ -166,9 +166,6 @@ class Bridge(object):
         bpdus = self.filter_bpdus(packets)
         data = self.filter_data(packets)
 
-        if VERBOSE and VERBOSE_FORWARDING:
-            print('Data: {}'.format(data))
-
         self.process_bpdus(bpdus)
         self.process_data(data)
 
@@ -184,6 +181,8 @@ class Bridge(object):
         for datum in data:
             print('Received message {} on port {} from {} to {}'.format(
                 datum.pid(), datum.recvd_port, datum.source, datum.dest))
+
+        return data
 
     def process_bpdus(self, bpdus: list):
         for bpdu in bpdus:
