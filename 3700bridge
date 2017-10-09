@@ -111,9 +111,13 @@ class Bridge(object):
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
 
         self.last_bpdu_send = 0
+        self.bpdus = {port.num: [] for port in self.ports}
+
+        self.next_bridge = None
+        self.root_port = None
+        self.root_cost = 0
         self.update_root(self.bridge_id, None, None, 0)
 
-        self.bpdus = {port.num: [] for port in self.ports}
 
     def run(self):
         while True:
@@ -171,8 +175,11 @@ class Bridge(object):
 
     def update_next_bridge(self, new_next_bridge: int, new_root_port: int, new_root_cost: int):
         self.next_bridge = new_next_bridge
-        self.root_port = new_root_port
         self.root_cost = new_root_cost
+
+        if self.root_port != new_root_port:
+            self.root_port = new_root_port
+            print('Root port: {}/{}'.format(self.bridge_id, self.root_port))
 
     def send_bpdus(self, ignore_time=False):
         if not ignore_time and (time() - self.last_bpdu_send < MIN_BPDU_INTERVAL):
@@ -193,10 +200,13 @@ class Bridge(object):
             if VERBOSE and VERBOSE_MST:
                 print('Port: {}'.format(port_num))
 
+            port = self.ports[port_num]
+
             if port_num == self.root_port:
                 if VERBOSE and VERBOSE_MST:
                     print('Active (root port): True')
 
+                port.is_open = True
                 continue
 
             from_me = [bpdu for bpdu in bpdus if deserialize_address(
@@ -216,7 +226,7 @@ class Bridge(object):
             for bpdu in not_from_me:
                 if VERBOSE and VERBOSE_MST:
                     print('{}/{}/{}'.format(bpdu.source,
-                                        bpdu.message['root'], bpdu.message['cost']))
+                                            bpdu.message['root'], bpdu.message['cost']))
 
             low_bpdu = lowest_bpdu(not_from_me)
 
@@ -228,12 +238,12 @@ class Bridge(object):
                                                         low_bpdu.message['root'], low_bpdu.message['cost']))
                     print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id),
                                                         serialize_address(self.root_bridge), self.root_cost))
-                    print('Active (lowest BPDU): {}'.format(active))
 
-            if VERBOSE and VERBOSE_MST:
-                print('Active: {}'.format(active))
+            if port.is_open is not active:
+                status = 'Designated' if active else 'Disabled'
+                print('{} port: {}/{}'.format(status, self.bridge_id, port_num))
 
-            self.ports[port_num].is_open = active
+            port.is_open = active
 
     def clean_stale_bpdus(self, bpdus: list):
         to_remove = []
