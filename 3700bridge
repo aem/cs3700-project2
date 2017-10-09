@@ -1,5 +1,6 @@
 #!/usr/bin/python3 -u
 
+from collections import namedtuple
 from enum import Enum
 from json import dumps, loads
 from select import select
@@ -16,12 +17,15 @@ SELECT_TIMEOUT = 0.2
 
 # Logging Flags
 
-# Enable general verbose logging
-VERBOSE = False
+# Master verbose logging flag; individual categories
+# below still need to be enabled
+VERBOSE = True
 # Enable packet send/receive logging
-VERBOSE_TXRX = True
+VERBOSE_TXRX = False
 # Enable MST-related logging
 VERBOSE_MST = False
+# Enable forwarding logging
+VERBOSE_FORWARDING = False
 
 
 class PacketType(Enum):
@@ -30,7 +34,8 @@ class PacketType(Enum):
 
 
 class Packet(object):
-    def __init__(self, source: str, sent_port: int, recvd_port: int, dest: str, p_type: PacketType, message: dict):
+    def __init__(self, source: str, sent_port: int, recvd_port: int,
+                 dest: str, p_type: PacketType, message: dict):
         self.source = source
         self.sent_port = sent_port
         self.recvd_port = recvd_port
@@ -103,6 +108,27 @@ class Port(socket):
         self.sendall(packet_str.encode('utf-8'))
 
 
+ForwardingEntry = namedtuple('ForwardingEntry',
+                             ['source', 'port', 'time_added'])
+
+
+class ForwardingTable(object):
+    def __init__(self):
+        self.table = {}
+
+    def add_entry(self, source: str, port: int):
+        self.table[source] = ForwardingEntry(source, port, time())
+
+    def get_port(self, source: str) -> int:
+        return self.table.get(source)
+
+    def flush(self):
+        self.table.clear()
+
+        if VERBOSE and VERBOSE_FORWARDING:
+            print('Flushed forwarding table')
+
+
 class Bridge(object):
     def __init__(self, bridge_id: str, lans):
         print('Bridge {} starting up'.format(bridge_id))
@@ -118,6 +144,7 @@ class Bridge(object):
         self.root_cost = 0
         self.update_root(self.bridge_id, None, None, 0)
 
+        self.forwarding_table = ForwardingTable()
 
     def run(self):
         while True:
@@ -136,11 +163,24 @@ class Bridge(object):
         return [packet for packet in packets if packet]
 
     def process_packets(self, packets: list):
-        bpdus = filter_bpdus(packets)
+        bpdus = self.filter_bpdus(packets)
+        data = self.filter_data(packets)
 
         self.process_bpdus(bpdus)
+        self.process_data(data)
 
-        # TODO data packets
+    def filter_bpdus(self, packets: list) -> list:
+        """Get all the BPDUs"""
+        return filter_packets_by_type(packets, PacketType.BPDU)
+
+    def filter_data(self, packets: list) -> list:
+        """Get all the data packets from open ports"""
+        data = [packet for packet in filter_packets_by_type(packets, PacketType.DATA)
+                if self.ports[packet.recvd_port].is_open]
+
+        for datum in data:
+            print('Received message {} on port {} from {} to {}'.format(
+                datum.pid(), datum.recvd_port, datum.source, datum.dest))
 
     def process_bpdus(self, bpdus: list):
         for bpdu in bpdus:
@@ -240,6 +280,8 @@ class Bridge(object):
                                                         serialize_address(self.root_bridge), self.root_cost))
 
             if port.is_open is not active:
+                self.forwarding_table.flush()
+
                 status = 'Designated' if active else 'Disabled'
                 print('{} port: {}/{}'.format(status, serialize_address(self.bridge_id), port_num))
 
@@ -258,6 +300,32 @@ class Bridge(object):
     def make_bpdu(self) -> Packet:
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
 
+    def process_data(self, data: list):
+        for datum in data:
+            self.process_datum(datum)
+
+    def process_datum(self, datum: Packet):
+        self.forwarding_table.add_entry(datum.source, datum.recvd_port)
+        forwarding_port = self.forwarding_table.get_port(datum.dest)
+
+        if forwarding_port:
+            if forwarding_port == datum.recvd_port:
+                print('Not forwarding message {}'.format(datum.pid()))
+            else:
+                print('Forwarding message {} to port {}'.format(
+                    datum.pid(), forwarding_port))
+
+                self.ports[forwarding_port].send_packet(datum)
+        else:
+            self.broadcast_datum(datum)
+
+    def broadcast_datum(self, datum: Packet):
+        print('Broadcasting message {} to all ports'.format(datum.pid()))
+
+        for i, port in enumerate(self.ports):
+            if port.is_open and i != datum.recvd_port:
+                port.send_packet(datum)
+
 
 def pad(name: str) -> str:
     """Pads the name with null bytes"""
@@ -274,12 +342,7 @@ def serialize_address(addr: int) -> str:
     return '{:04x}'.format(addr)
 
 
-def filter_bpdus(packets):
-    """Get all the BPDUs"""
-    return filter_packets_by_type(packets, PacketType.BPDU)
-
-
-def filter_packets_by_type(packets, packet_type: PacketType):
+def filter_packets_by_type(packets: list, packet_type: PacketType) -> list:
     """Get all the packets of the given type"""
     return [packet for packet in packets if packet.type is packet_type]
 
