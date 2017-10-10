@@ -1,15 +1,35 @@
 #!/usr/bin/python3 -u
 
-from datetime import datetime
+from collections import namedtuple
 from enum import Enum
 from json import dumps, loads
 from select import select
 from socket import AF_UNIX, SOCK_SEQPACKET, socket
-from time import sleep
+from sys import argv
+from time import time
 
-SELECT_TIMEOUT = 0.1
+# Timeout for received BPDUs, in seconds
+BPDU_TIMEOUT = 0.75
+# Timeout for forwarding table entries, in seconds
+FORWARDING_TIMEOUT = 0.35
+# The minimum interval between BPDU sends, in seconds
+MIN_BPDU_INTERVAL = 0.5
+# Maximum receivable packet size, in bytes
 MAX_PACKET_SIZE = 1500
-MIN_THREAD_SLEEP = 0.5
+# Timeout for selecting ready sockets, in seconds
+SELECT_TIMEOUT = 0.2
+
+# Logging Flags
+
+# Master verbose logging flag; individual categories
+# below still need to be enabled
+VERBOSE = True
+# Enable packet send/receive logging
+VERBOSE_TXRX = False
+# Enable MST-related logging
+VERBOSE_MST = False
+# Enable forwarding logging
+VERBOSE_FORWARDING = True
 
 
 class PacketType(Enum):
@@ -18,30 +38,44 @@ class PacketType(Enum):
 
 
 class Packet(object):
-    def __init__(self, source: str, port: int, dest: str, p_type: PacketType, message: dict):
+    """
+    Either a BPDU or a data packet. A packet knows on which ports it was sent
+    and received, what time it was received at, in addition to the rest of the
+    information in the spec.
+    """
+
+    def __init__(self, source: str, sent_port: int, recvd_port: int, recvd_time: int,
+                 dest: str, p_type: PacketType, message: dict):
         self.source = source
-        self.port = port
+        self.sent_port = sent_port
+        self.recvd_port = recvd_port
+        self.recvd_time = recvd_time
         self.dest = dest
         self.type = p_type
         self.message = message
 
-    def id(self):
+    def pid(self):
+        """Get the packet id"""
         return self.message['id']
 
     @staticmethod
     def bpdu(source: int, root: int, cost: int):
-        return Packet(source,
+        """Build a BPDU"""
+        return Packet(serialize_address(source),
                       -1,
-                      deserialize_address('ffff'),
+                      -1,
+                      -1,
+                      'ffff',
                       PacketType.BPDU,
-                      {
-                          'id': '1234',
-                          'root': serialize_address(root),
-                          'cost': cost
-                      })
+                      {'id': '1234', 'root': serialize_address(root), 'cost': cost})
 
 
 class Port(socket):
+    """
+    A port. Ports can send packets, receive packets, are aware of which LAN
+    they're connected to, and whether or not it is open.
+    """
+
     def __init__(self, num: int, lan: str):
         super().__init__(AF_UNIX, SOCK_SEQPACKET)
 
@@ -52,172 +86,374 @@ class Port(socket):
         self.connect(pad(lan))
 
     def recv_packet(self) -> Packet:
+        """
+        Receive a packet on this port. If no data is received, returns `None`
+        """
         msg = self.recv(MAX_PACKET_SIZE)
-        msg_dict = loads(msg.decode('utf-8'))
 
+        if not msg:
+            return None
+
+        msg_dict = loads(msg.decode('utf-8'))
         packet_type = PacketType[msg_dict['type'].upper()]
 
-        return Packet(msg_dict['source'], self.num, msg_dict['dest'],
-                      packet_type, msg_dict['message'])
+        packet = Packet(msg_dict['source'],
+                        msg_dict.get('port', -1),
+                        self.num,
+                        time(),
+                        msg_dict['dest'],
+                        packet_type,
+                        msg_dict['message'])
+
+        if VERBOSE and VERBOSE_TXRX:
+            print('Received {} packet from {}'.format(
+                packet.type.name, packet.source))
+
+        return packet
 
     def send_packet(self, packet: Packet):
+        """Send the given packet on this port."""
         packet_dict = {
             'source': packet.source,
             'dest': packet.dest,
             'type': packet.type.name.lower(),
-            'message': packet.message
+            'message': packet.message,
+            'port': self.num
         }
 
         packet_str = dumps(packet_dict)
+
+        if VERBOSE and VERBOSE_TXRX:
+            print('Sending {} packet on port {}'.format(
+                packet.type.name, self.num))
+
         self.sendall(packet_str.encode('utf-8'))
 
 
-class RoutingEntry(object):
-    def __init__(self, port_id: int):
-        self.port_id = port_id
-        self.created_at = datetime.utcnow()
+ForwardingEntry = namedtuple('ForwardingEntry',
+                             ['source', 'port', 'time_added'])
+
+
+class ForwardingTable(object):
+    """
+    A LAN forwarding table, to keep track of which hosts can be reached via
+    which LANs.
+    """
+
+    def __init__(self):
+        self.table = {}
+
+    def add_entry(self, source: str, port: int):
+        """Add an entry to this forwarding table."""
+        self.table[source] = ForwardingEntry(source, port, time())
+
+    def get_port(self, source: str) -> int:
+        """Get the associated port for a given source host."""
+        entry = self.table.get(source)
+        return entry.port if entry else None
+
+    def timeout_entries(self):
+        """
+        Determines if any entries were added to the table after
+        the FORWARDING_TIMEOUT, and removes them if so
+        """
+        timed_out_keys = set()
+
+        for source, entry in self.table.items():
+            if timed_out(entry.time_added, FORWARDING_TIMEOUT):
+                timed_out_keys.add(source)
+
+        for key in timed_out_keys:
+            del self.table[key]
+
+    def flush(self):
+        """
+        Clears the entire table. This should be called any time the port or
+        host configuration seems to have changed based on BPDU packets.
+        """
+        self.table.clear()
+
+        if VERBOSE and VERBOSE_FORWARDING:
+            print('Flushed forwarding table')
 
 
 class Bridge(object):
+    """A representation of this bridge. Handles all communication over ports."""
+
     def __init__(self, bridge_id: str, lans):
         print('Bridge {} starting up'.format(bridge_id))
 
         self.bridge_id = deserialize_address(bridge_id)
         self.ports = [Port(i, lan) for i, lan in enumerate(lans)]
-        self.update_root(self.bridge_id, None, 0)
-        self.routing_table = dict()
 
-    def reset_routing_table(self):
-        self.routing_table = dict()
+        self.last_bpdu_send = 0
+        self.bpdus = {port.num: [] for port in self.ports}
 
-    def update_root(self, root_bridge: str, root_port: int, root_cost: int):
-        self.root_bridge = root_bridge
-        self.reset_routing_table()
-        print('New root: {}/{}'.format(serialize_address(self.bridge_id), root_bridge))
+        self.next_bridge = None
+        self.root_port = None
+        self.root_cost = 0
+        self.update_root(self.bridge_id, None, None, 0)
 
-        self.update_root_port(root_port, root_cost)
-
-    def update_root_port(self, root_port: int, root_cost: int):
-        self.root_port = root_port
-        self.root_cost = root_cost
-        print('Root port: {}/{}'.format(serialize_address(self.bridge_id), root_port))
+        self.forwarding_table = ForwardingTable()
 
     def run(self):
-        last_cycle = datetime.utcnow()
+        """The main run loop. Delegates all work out to helper functions."""
         while True:
-            since_last_run = (datetime.utcnow() - last_cycle).total_seconds()
-            if (since_last_run < MIN_THREAD_SLEEP):
-                sleep(MIN_THREAD_SLEEP - since_last_run)
-            last_cycle = datetime.utcnow()
-
             packets = self.read_packets()
-            bpdus = filter_bpdus(packets)
-            data = filter_data(packets)
+            self.process_packets(packets)
 
-            self.update_routing_table_ttls()
-            self.process_bpdus(bpdus)
-            for packet in data:
-                self.process_data_packet(packet)
+            if VERBOSE and VERBOSE_MST:
+                print('Ports: {}'.format(
+                    [port.lan for port in self.ports if port.is_open]))
+
             self.send_bpdus()
 
-    def process_data_packet(self, packet):
-        print('Received message {}, on port {} from {} to {}').format(
-            packet.id(), packet.port, packet.source, packet.dest)
-        self.update_routing_table(packet)
-        self.process_packet(packet)
+    def read_packets(self):
+        """
+        Reads all packets from this bridge's ports which are ready based on the
+        SELECT_TIMEOUT. This is a blocking function call and will block the
+        main thread until the timeout is hit if no packets are ready.
+        """
+        ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
+        packets = [port.recv_packet() for port in ready_ports]
+        return [packet for packet in packets if packet]
 
-    def update_routing_table(self, packet):
-        self.routing_table[packet.source] = RoutingEntry(packet.port)
+    def process_packets(self, packets: list):
+        """
+        Given a list of packets, processes all of them, after separating DATA
+        and BPDU packets.
+        """
+        bpdus = self.filter_bpdus(packets)
+        data = self.filter_data(packets)
 
-    def update_routing_table_ttls(self):
-        for bridge, entry in self.routing_table:
-            if (datetime.utcnow() - entry.created_at).total_seconds() > 5:
-                self.routing_table.pop(bridge, False)
+        self.process_bpdus(bpdus)
+        self.process_data(data)
 
-    def process_packet(self, packet):
-        if self.routing_table.get(packet.dest):
-            port = self.ports.get(self.routing_table[packet.dest].port)
-            if port and port.is_open:
-                self.forward_packet(packet, port)
-            else:
-                self.drop_packet(packet)
-        else:
-            self.broadcast_packet(packet)
+    def filter_bpdus(self, packets: list) -> list:
+        """Get all the BPDUs"""
+        return filter_packets_by_type(packets, PacketType.BPDU)
 
-    def forward_packet(self, packet, port):
-        print('Forwarding message {} to port {}').format(packet.id(), port.num)
-        port.send_packet(packet)
+    def filter_data(self, packets: list) -> list:
+        """Get all the data packets from open ports"""
+        data = [packet for packet in filter_packets_by_type(packets, PacketType.DATA)
+                if self.ports[packet.recvd_port].is_open]
 
-    def broadcast_packet(self, packet):
-        print('Broadcasting message {} to all ports').format(packet.id())
-        for port in self.ports:
-            if port.is_open:
-                port.send_packet(packet)
+        for datum in data:
+            print('Received message {} on port {} from {} to {}'.format(
+                datum.pid(), datum.recvd_port, datum.source, datum.dest))
 
-    def drop_packet(self, packet):
-        print('Not forwarding packet {}').format(packet.id())
+        return data
 
-    def process_bpdus(self, bpdus):
-        if not bpdus:
+    def process_bpdus(self, bpdus: list):
+        """Process all BPDUs and update blocked ports"""
+        for bpdu in bpdus:
+            self.process_bpdu(bpdu)
+
+        self.designate_ports()
+
+    def process_bpdu(self, bpdu: Packet):
+        """
+        Process an individual BPDU packet to learn about the network. Update
+        the bridge's root port if necessary.
+        """
+        other_root = deserialize_address(bpdu.message['root'])
+        other_cost = bpdu.message['cost']
+        other_id = deserialize_address(bpdu.source)
+
+        if other_root < self.root_bridge:
+            self.update_root(other_root, other_id,
+                             bpdu.recvd_port, other_cost + 1)
+        elif (other_root == self.root_bridge and
+              (other_cost < (self.root_cost - 1) or
+               other_cost == (self.root_cost - 1) and other_id < self.next_bridge)):
+            self.update_next_bridge(other_id, bpdu.recvd_port, other_cost + 1)
+
+        self.bpdus[bpdu.recvd_port].append(bpdu)
+
+    def update_root(self, new_root_id: int, new_next_bridge: int, new_root_port: int, new_root_cost: int):
+        """
+        Update the bridge's knowledge of the root bridge and the next bridge
+        in the MST
+        """
+        self.root_bridge = new_root_id
+        self.update_next_bridge(new_next_bridge, new_root_port, new_root_cost)
+
+        print('New root: {}/{}'.format(
+            serialize_address(self.bridge_id),
+            serialize_address(self.root_bridge)))
+
+        self.send_bpdus(True)
+
+    def update_next_bridge(self, new_next_bridge: int, new_root_port: int, new_root_cost: int):
+        """Update's the next bridge in the path to the root."""
+        self.next_bridge = new_next_bridge
+        self.root_cost = new_root_cost
+
+        if self.root_port != new_root_port:
+            self.root_port = new_root_port
+            print(
+                'Root port: {}/{}'.format(serialize_address(self.bridge_id), self.root_port))
+
+    def send_bpdus(self, ignore_time=False):
+        """
+        Send BPDU packets on all ports to ensure connected bridges are in sync.
+        Depends on the MIN_BPDU_INTERVAL to determine whether or not to send
+        and the SELECT_TIMEOUT to timeout sending on each port.
+        """
+        if not ignore_time and not timed_out(self.last_bpdu_send, MIN_BPDU_INTERVAL):
             return
 
-        low_bpdu = bpdus[0]
-        for bpdu in bpdus[1:]:
-            if bpdu_less_than(bpdu, low_bpdu):
-                low_bpdu = bpdu
-        # TODO
+        bpdu = self.make_bpdu()
 
-    def read_packets(self):
-        ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
-        return [port.recv_packet() for port in ready_ports]
-
-    def send_bpdus(self):
         _, ready_ports, _ = select([], self.ports, [], SELECT_TIMEOUT)
         for port in ready_ports:
-            port.send_packet(Packet.bpdu(
-                self.bridge_id, self.root_bridge, self.root_cost))
+            port.send_packet(bpdu)
+
+        self.last_bpdu_send = time()
+
+    def designate_ports(self):
+        """
+        Update designated and blocked ports based on the BPDUs that this bridge
+        has most recently received.
+        """
+        for port_num, bpdus in self.bpdus.items():
+            self.clean_stale_bpdus(bpdus)
+
+            if VERBOSE and VERBOSE_MST:
+                print('Port: {}'.format(port_num))
+
+            port = self.ports[port_num]
+
+            if port_num == self.root_port:
+                if VERBOSE and VERBOSE_MST:
+                    print('Active (root port): True')
+
+                port.is_open = True
+                continue
+
+            from_me = [bpdu for bpdu in bpdus if deserialize_address(
+                bpdu.source) == self.bridge_id]
+            active = True
+
+            if from_me:
+                min_sent_port = min([bpdu.sent_port for bpdu in from_me])
+                active &= port_num < min_sent_port
+
+                if VERBOSE and VERBOSE_MST:
+                    print('Active (self-connected): {}'.format(active))
+
+            not_from_me = [bpdu for bpdu in bpdus if deserialize_address(
+                bpdu.source) != self.bridge_id]
+
+            for bpdu in not_from_me:
+                if VERBOSE and VERBOSE_MST:
+                    print('{}/{}/{}'.format(bpdu.source,
+                                            bpdu.message['root'], bpdu.message['cost']))
+
+            low_bpdu = lowest_bpdu(not_from_me)
+
+            if low_bpdu:
+                active &= bpdu_less_than(self.make_bpdu(), low_bpdu)
+
+                if VERBOSE and VERBOSE_MST:
+                    print('Low source: {}/{}/{}'.format(low_bpdu.source,
+                                                        low_bpdu.message['root'], low_bpdu.message['cost']))
+                    print('Me:         {}/{}/{}'.format(serialize_address(self.bridge_id),
+                                                        serialize_address(self.root_bridge), self.root_cost))
+
+            if port.is_open is not active:
+                self.forwarding_table.flush()
+
+                status = 'Designated' if active else 'Disabled'
+                print('{} port: {}/{}'.format(status,
+                                              serialize_address(self.bridge_id), port_num))
+
+            port.is_open = active
+
+    def clean_stale_bpdus(self, bpdus: list):
+        """
+        If we've received a new BPDU from a port or a BPDU has expired, remove
+        them from the set.
+        """
+        to_remove = []
+
+        for i, bpdu in enumerate(bpdus):
+            if (deserialize_address(bpdu.message['root']) != self.root_bridge or
+                    timed_out(bpdu.recvd_time, BPDU_TIMEOUT)):
+                to_remove.append(i)
+
+        remove_all(bpdus, to_remove)
+
+    def make_bpdu(self) -> Packet:
+        """Create a BPDU for this bridge to send to other bridges."""
+        return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
+
+    def process_data(self, data: list):
+        """Process all of the received data packets."""
+        for datum in data:
+            self.process_datum(datum)
+
+    def process_datum(self, datum: Packet):
+        """
+        Process an individual data packet by either forwarding, dropping, or
+        broadcasting the packet based on the forwarding table.
+        """
+        self.forwarding_table.add_entry(datum.source, datum.recvd_port)
+        forwarding_port = self.forwarding_table.get_port(datum.dest)
+
+        if forwarding_port:
+            if forwarding_port == datum.recvd_port:
+                print('Not forwarding message {}'.format(datum.pid()))
+            else:
+                print('Forwarding message {} to port {}'.format(
+                    datum.pid(), forwarding_port))
+
+                self.ports[forwarding_port].send_packet(datum)
+        else:
+            self.broadcast_datum(datum)
+
+    def broadcast_datum(self, datum: Packet):
+        """Broadcast a data packet on all open ports."""
+        print('Broadcasting message {} to all ports'.format(datum.pid()))
+
+        for i, port in enumerate(self.ports):
+            if port.is_open and i != datum.recvd_port:
+                port.send_packet(datum)
 
 
-def pad(name):
-    """
-    Pads the name with null bytes
-    """
+def pad(name: str) -> str:
+    """Pads the name with null bytes"""
     return '\0{}{}'.format(name, '\0' * (107 - len(name)))
 
 
 def deserialize_address(addr: str) -> int:
-    """
-    Deserialize the hex address into a decimal number
-    """
+    """Deserialize the hex address into a decimal number"""
     return int(addr, 16)
 
 
 def serialize_address(addr: int) -> str:
-    """
-    Serialize the decimal address into a hex string
-    """
-    return hex(addr)[2:]
+    """Serialize the decimal address into a hex string"""
+    return '{:04x}'.format(addr)
 
 
-def filter_bpdus(packets):
-    """
-    Get all the BPDUs
-    """
-    return filter_packets_by_type(packets, PacketType.BPDU)
-
-
-def filter_data(packets):
-    """
-    Get all the data packets
-    """
-    return filter_packets_by_type(packets, PacketType.DATA)
-
-
-def filter_packets_by_type(packets, packet_type: PacketType):
-    """
-    Get all the packets of the given type
-    """
+def filter_packets_by_type(packets: list, packet_type: PacketType) -> list:
+    """Get all the packets of the given type"""
     return [packet for packet in packets if packet.type is packet_type]
+
+
+def lowest_bpdu(bpdus) -> Packet:
+    """
+    Get the lowest BPDU
+    """
+    if not bpdus:
+        return None
+
+    low_bpdu = bpdus[0]
+    for bpdu in bpdus[1:]:
+        if bpdu_less_than(bpdu, low_bpdu):
+            low_bpdu = bpdu
+
+    return low_bpdu
 
 
 def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
@@ -227,5 +463,34 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
     msg1 = bpdu1.message
     msg2 = bpdu2.message
 
-    # TODO
-    return (msg1['root'])
+    root1 = deserialize_address(msg1['root'])
+    root2 = deserialize_address(msg2['root'])
+
+    cost1 = msg1['cost']
+    cost2 = msg2['cost']
+
+    id1 = deserialize_address(bpdu1.source)
+    id2 = deserialize_address(bpdu2.source)
+
+    return ((root1 < root2) or
+            (root1 == root2 and cost1 < cost2) or
+            (root1 == root2 and cost1 == cost2 and id1 < id2))
+
+
+def remove_all(src: list, indices_to_remove: list):
+    """Remove all the elements at the given indicies from the given list"""
+    for i, index_to_remove in enumerate(indices_to_remove):
+        del src[index_to_remove - i]
+
+
+def timed_out(t: int, timeout: int) -> bool:
+    """
+    Determine if the time since the given time is greater than the given
+    timeout
+    """
+    return time() - t >= timeout
+
+
+if __name__ == '__main__':
+    BRIDGE = Bridge(argv[1], argv[2:])
+    BRIDGE.run()
