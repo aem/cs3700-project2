@@ -11,13 +11,13 @@ from time import time
 # Timeout for received BPDUs, in seconds
 BPDU_TIMEOUT = 0.75
 # Timeout for forwarding table entries, in seconds
-FORWARDING_TIMEOUT = 0.35
+FORWARDING_TIMEOUT = 0.5
 # The minimum interval between BPDU sends, in seconds
 MIN_BPDU_INTERVAL = 0.5
 # Maximum receivable packet size, in bytes
 MAX_PACKET_SIZE = 1500
 # Timeout for selecting ready sockets, in seconds
-SELECT_TIMEOUT = 0.2
+SELECT_TIMEOUT = 0.15
 
 # Logging Flags
 
