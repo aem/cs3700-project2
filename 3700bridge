@@ -11,7 +11,7 @@ from time import time
 # Timeout for received BPDUs, in seconds
 BPDU_TIMEOUT = 0.75
 # Timeout for forwarding table entries, in seconds
-FORWARDING_TIMEOUT = 0.5
+FORWARDING_TIMEOUT = 0.35
 # The minimum interval between BPDU sends, in seconds
 MIN_BPDU_INTERVAL = 0.5
 # Maximum receivable packet size, in bytes
@@ -38,6 +38,12 @@ class PacketType(Enum):
 
 
 class Packet(object):
+    """
+    Either a BPDU or a data packet. A packet knows on which ports it was sent
+    and received, what time it was received at, in addition to the rest of the
+    information in the spec.
+    """
+
     def __init__(self, source: str, sent_port: int, recvd_port: int, recvd_time: int,
                  dest: str, p_type: PacketType, message: dict):
         self.source = source
@@ -65,6 +71,11 @@ class Packet(object):
 
 
 class Port(socket):
+    """
+    A port. Ports can send packets, receive packets, are aware of which LAN
+    they're connected to, and whether or not it is open.
+    """
+
     def __init__(self, num: int, lan: str):
         super().__init__(AF_UNIX, SOCK_SEQPACKET)
 
@@ -75,6 +86,9 @@ class Port(socket):
         self.connect(pad(lan))
 
     def recv_packet(self) -> Packet:
+        """
+        Receive a packet on this port. If no data is received, returns `None`
+        """
         msg = self.recv(MAX_PACKET_SIZE)
 
         if not msg:
@@ -98,6 +112,7 @@ class Port(socket):
         return packet
 
     def send_packet(self, packet: Packet):
+        """Send the given packet on this port."""
         packet_dict = {
             'source': packet.source,
             'dest': packet.dest,
@@ -120,17 +135,28 @@ ForwardingEntry = namedtuple('ForwardingEntry',
 
 
 class ForwardingTable(object):
+    """
+    A LAN forwarding table, to keep track of which hosts can be reached via
+    which LANs.
+    """
+
     def __init__(self):
         self.table = {}
 
     def add_entry(self, source: str, port: int):
+        """Add an entry to this forwarding table."""
         self.table[source] = ForwardingEntry(source, port, time())
 
     def get_port(self, source: str) -> int:
+        """Get the associated port for a given source host."""
         entry = self.table.get(source)
         return entry.port if entry else None
 
     def timeout_entries(self):
+        """
+        Determines if any entries were added to the table after
+        the FORWARDING_TIMEOUT, and removes them if so
+        """
         timed_out_keys = set()
 
         for source, entry in self.table.items():
@@ -141,6 +167,10 @@ class ForwardingTable(object):
             del self.table[key]
 
     def flush(self):
+        """
+        Clears the entire table. This should be called any time the port or
+        host configuration seems to have changed based on BPDU packets.
+        """
         self.table.clear()
 
         if VERBOSE and VERBOSE_FORWARDING:
@@ -148,6 +178,8 @@ class ForwardingTable(object):
 
 
 class Bridge(object):
+    """A representation of this bridge. Handles all communication over ports."""
+
     def __init__(self, bridge_id: str, lans):
         print('Bridge {} starting up'.format(bridge_id))
 
@@ -165,6 +197,7 @@ class Bridge(object):
         self.forwarding_table = ForwardingTable()
 
     def run(self):
+        """The main run loop. Delegates all work out to helper functions."""
         while True:
             packets = self.read_packets()
             self.process_packets(packets)
@@ -176,11 +209,20 @@ class Bridge(object):
             self.send_bpdus()
 
     def read_packets(self):
+        """
+        Reads all packets from this bridge's ports which are ready based on the
+        SELECT_TIMEOUT. This is a blocking function call and will block the
+        main thread until the timeout is hit if no packets are ready.
+        """
         ready_ports, _, _ = select(self.ports, [], [], SELECT_TIMEOUT)
         packets = [port.recv_packet() for port in ready_ports]
         return [packet for packet in packets if packet]
 
     def process_packets(self, packets: list):
+        """
+        Given a list of packets, processes all of them, after separating DATA
+        and BPDU packets.
+        """
         bpdus = self.filter_bpdus(packets)
         data = self.filter_data(packets)
 
@@ -203,12 +245,17 @@ class Bridge(object):
         return data
 
     def process_bpdus(self, bpdus: list):
+        """Process all BPDUs and update blocked ports"""
         for bpdu in bpdus:
             self.process_bpdu(bpdu)
 
         self.designate_ports()
 
     def process_bpdu(self, bpdu: Packet):
+        """
+        Process an individual BPDU packet to learn about the network. Update
+        the bridge's root port if necessary.
+        """
         other_root = deserialize_address(bpdu.message['root'])
         other_cost = bpdu.message['cost']
         other_id = deserialize_address(bpdu.source)
@@ -224,6 +271,10 @@ class Bridge(object):
         self.bpdus[bpdu.recvd_port].append(bpdu)
 
     def update_root(self, new_root_id: int, new_next_bridge: int, new_root_port: int, new_root_cost: int):
+        """
+        Update the bridge's knowledge of the root bridge and the next bridge
+        in the MST
+        """
         self.root_bridge = new_root_id
         self.update_next_bridge(new_next_bridge, new_root_port, new_root_cost)
 
@@ -234,6 +285,7 @@ class Bridge(object):
         self.send_bpdus(True)
 
     def update_next_bridge(self, new_next_bridge: int, new_root_port: int, new_root_cost: int):
+        """Update's the next bridge in the path to the root."""
         self.next_bridge = new_next_bridge
         self.root_cost = new_root_cost
 
@@ -243,6 +295,11 @@ class Bridge(object):
                 'Root port: {}/{}'.format(serialize_address(self.bridge_id), self.root_port))
 
     def send_bpdus(self, ignore_time=False):
+        """
+        Send BPDU packets on all ports to ensure connected bridges are in sync.
+        Depends on the MIN_BPDU_INTERVAL to determine whether or not to send
+        and the SELECT_TIMEOUT to timeout sending on each port.
+        """
         if not ignore_time and not timed_out(self.last_bpdu_send, MIN_BPDU_INTERVAL):
             return
 
@@ -255,6 +312,10 @@ class Bridge(object):
         self.last_bpdu_send = time()
 
     def designate_ports(self):
+        """
+        Update designated and blocked ports based on the BPDUs that this bridge
+        has most recently received.
+        """
         for port_num, bpdus in self.bpdus.items():
             self.clean_stale_bpdus(bpdus)
 
@@ -310,6 +371,10 @@ class Bridge(object):
             port.is_open = active
 
     def clean_stale_bpdus(self, bpdus: list):
+        """
+        If we've received a new BPDU from a port or a BPDU has expired, remove
+        them from the set.
+        """
         to_remove = []
 
         for i, bpdu in enumerate(bpdus):
@@ -320,13 +385,19 @@ class Bridge(object):
         remove_all(bpdus, to_remove)
 
     def make_bpdu(self) -> Packet:
+        """Create a BPDU for this bridge to send to other bridges."""
         return Packet.bpdu(self.bridge_id, self.root_bridge, self.root_cost)
 
     def process_data(self, data: list):
+        """Process all of the received data packets."""
         for datum in data:
             self.process_datum(datum)
 
     def process_datum(self, datum: Packet):
+        """
+        Process an individual data packet by either forwarding, dropping, or
+        broadcasting the packet based on the forwarding table.
+        """
         self.forwarding_table.add_entry(datum.source, datum.recvd_port)
         forwarding_port = self.forwarding_table.get_port(datum.dest)
 
@@ -342,6 +413,7 @@ class Bridge(object):
             self.broadcast_datum(datum)
 
     def broadcast_datum(self, datum: Packet):
+        """Broadcast a data packet on all open ports."""
         print('Broadcasting message {} to all ports'.format(datum.pid()))
 
         for i, port in enumerate(self.ports):
@@ -405,13 +477,17 @@ def bpdu_less_than(bpdu1: Packet, bpdu2: Packet) -> bool:
             (root1 == root2 and cost1 == cost2 and id1 < id2))
 
 
-def remove_all(l: list, indices_to_remove: list):
+def remove_all(src: list, indices_to_remove: list):
     """Remove all the elements at the given indicies from the given list"""
     for i, index_to_remove in enumerate(indices_to_remove):
-        del l[index_to_remove - i]
+        del src[index_to_remove - i]
 
 
 def timed_out(t: int, timeout: int) -> bool:
+    """
+    Determine if the time since the given time is greater than the given
+    timeout
+    """
     return time() - t >= timeout
 
 
